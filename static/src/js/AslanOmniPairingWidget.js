@@ -7,7 +7,14 @@ import { useService } from '@web/core/utils/hooks';
 export class AslanOmniPairingWidget extends Component {
     setup() {
         this.orm = useService('orm');
-        this.state = useState({ step: 'idle', code: '', deviceId: '', errorMsg: '' });
+        // Pre-populate deviceId from the record so the "paired" state shows on load.
+        const existingDeviceId = this.props.record.data?.aslan_omni_device_id || '';
+        this.state = useState({
+            step: existingDeviceId ? 'done' : 'idle',
+            code: '',
+            deviceId: existingDeviceId,
+            errorMsg: '',
+        });
         this.codeInput = useRef('codeInput');
     }
 
@@ -57,6 +64,31 @@ export class AslanOmniPairingWidget extends Component {
 
     reset() {
         Object.assign(this.state, { step: 'idle', code: '', errorMsg: '' });
+    }
+
+    async onRevoke() {
+        if (!confirm('Dissocier ce terminal Aslan Omni ? Le terminal devra être réassocié pour accepter des paiements depuis Odoo.')) return;
+
+        const configId = this.props.record.resId;
+        const [config] = await this.orm.read('pos.config', [configId], ['aslan_omni_api_url']);
+        const apiUrl = config.aslan_omni_api_url || 'https://api.aslanpay.ma';
+
+        this.state.step = 'revoking';
+        try {
+            // Tell the server to null the apiKey — best-effort, always clear locally.
+            await fetch(`${apiUrl}/cloud/pair/revoke`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}',
+            }).catch(() => {});
+        } finally {
+            // Always clear local fields regardless of network outcome.
+            await this.orm.write('pos.config', [configId], {
+                aslan_omni_device_id: false,
+                aslan_omni_api_key: false,
+            });
+            Object.assign(this.state, { step: 'idle', code: '', deviceId: '', errorMsg: '' });
+        }
     }
 }
 
