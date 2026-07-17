@@ -24,6 +24,12 @@ export class AslanOmniPairingWidget extends Component {
         const [config] = await this.orm.read('pos.config', [configId], ['aslan_omni_api_url']);
         const apiUrl = config.aslan_omni_api_url || 'https://api.aslanpay.ma';
 
+        if (!apiUrl.startsWith('https://')) {
+            this.state.step = 'error';
+            this.state.errorMsg = "L'URL de l'API doit utiliser HTTPS.";
+            return;
+        }
+
         this.state.step = 'loading';
         try {
             const resp = await fetch(`${apiUrl}/cloud/pair`, {

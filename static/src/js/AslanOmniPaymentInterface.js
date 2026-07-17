@@ -26,6 +26,10 @@ export class AslanOmniPaymentInterface extends AbstractPaymentInterface {
             this._showError('Terminal Aslan Omni non configuré. Associez un terminal dans les paramètres.');
             return false;
         }
+        if (!apiUrl.startsWith('https://')) {
+            this._showError('Aslan Omni API URL must use HTTPS. Check POS configuration.');
+            return false;
+        }
 
         const amountCents = Math.round(paymentLine.amount * 100);
         const ref = `ODOO-${order.uid}-${Date.now()}`;
@@ -122,7 +126,8 @@ export class AslanOmniPaymentInterface extends AbstractPaymentInterface {
         if (data.status === 'approved') {
             paymentLine.set_payment_status('done');
             paymentLine.aslan_omni_result = {
-                cardNumber:  data.cardNumber,
+                // Enforce masking defensively — never store/display a full PAN.
+                cardNumber:  this._maskPan(data.cardNumber),
                 cardScheme:  data.cardScheme,
                 authNumber:  data.authNumber,
                 rrn:         data.rrn,
@@ -147,6 +152,12 @@ export class AslanOmniPaymentInterface extends AbstractPaymentInterface {
         this._showError(`Paiement refusé${rc}.`);
         paymentLine.set_payment_status('retry');
         return false;
+    }
+
+    _maskPan(pan) {
+        if (!pan || typeof pan !== 'string') return '';
+        // Keep only last 4 digits visible; replace all preceding digits with *.
+        return pan.replace(/\d(?=\d{4})/g, '*');
     }
 
     _showError(msg) {
