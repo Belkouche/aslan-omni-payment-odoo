@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<templates id="template" xml:space="preserve">
+    <t t-name="aslan_omni.PairingWidget" owl="1">
+        <div class="aslan-omni-pairing mt8">
+            <t t-if="state.step === 'idle'">
+                <p>Entrez le code affiché sur l'écran du terminal Aslan Omni :</p>
+                <p class="text-muted"><small>Appuyez d'abord sur "Associer avec Odoo" sur le terminal.</small></p>
+                <div class="d-flex align-items-center gap-2 mt8">
+                    <input
+                        t-ref="codeInput"
+                        type="text"
+                        class="o_input"
+                        style="font-family:monospace;font-size:1.4rem;letter-spacing:0.3rem;width:180px;text-transform:uppercase"
+                        placeholder="XXXXXXXX"
+                        maxlength="8"
+                        t-on-input="onCodeInput"
+                    />
+                    <button class="btn btn-primary" t-on-click="onSubmitCode"
+                            t-att-disabled="state.code.length !== 8">
+                        Associer
+                    </button>
+                </div>
+            </t>
+            <t t-if="state.step === 'loading'">
+                <span class="fa fa-spin fa-spinner mr4"/> Association en cours...
+            </t>
+            <t t-if="state.step === 'done'">
+                <div class="alert alert-success mt8">
+                    <span class="fa fa-check-circle mr4"/> Terminal associé avec succès !
+                    <br/><small>Device ID : <t t-esc="state.deviceId"/></small>
+                </div>
+            </t>
+            <t t-if="state.step === 'error'">
+                <div class="alert alert-danger mt8">
+                    <t t-esc="state.errorMsg"/>
+                    <br/><a t-on-click="reset" href="#">Réessayer</a>
+                </div>
+            </t>
+        </div>
+    </t>
+</templates>
