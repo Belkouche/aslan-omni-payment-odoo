@@ -70,17 +70,27 @@ export class AslanOmniPairingWidget extends Component {
         if (!confirm('Dissocier ce terminal Aslan Omni ? Le terminal devra être réassocié pour accepter des paiements depuis Odoo.')) return;
 
         const configId = this.props.record.resId;
-        const [config] = await this.orm.read('pos.config', [configId], ['aslan_omni_api_url']);
-        const apiUrl = config.aslan_omni_api_url || 'https://api.aslanpay.ma';
+        const [config] = await this.orm.read('pos.config', [configId], [
+            'aslan_omni_api_url', 'aslan_omni_api_key', 'aslan_omni_device_id',
+        ]);
+        const apiUrl   = config.aslan_omni_api_url   || 'https://api.aslanpay.ma';
+        const apiKey   = config.aslan_omni_api_key;
+        const deviceId = config.aslan_omni_device_id;
 
         this.state.step = 'revoking';
         try {
-            // Tell the server to null the apiKey — best-effort, always clear locally.
-            await fetch(`${apiUrl}/cloud/pair/revoke`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: '{}',
-            }).catch(() => {});
+            // Merchant-side revoke — requires apiKey auth, targets the specific device.
+            // Best-effort: always clear locally even if the request fails.
+            if (apiKey && deviceId) {
+                await fetch(`${apiUrl}/cloud/devices/${deviceId}/revoke`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`,
+                    },
+                    body: '{}',
+                }).catch(() => {});
+            }
         } finally {
             // Always clear local fields regardless of network outcome.
             await this.orm.write('pos.config', [configId], {
