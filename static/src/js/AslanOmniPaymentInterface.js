@@ -5,13 +5,32 @@ import { registry } from '@web/core/registry';
 
 const PAYMENT_TIMEOUT_MS = 97000;  // 2s buffer over server's 95s long-poll
 const POLL_INTERVAL_MS   = 3000;
+const MAX_RECOVERY_ATTEMPTS = 2;   // re-POSTs after the first, before giving up
 
 export class AslanOmniPaymentInterface extends AbstractPaymentInterface {
 
     /**
+     * Stable idempotency key for a payment line.
+     *
+     * CRITICAL: this must NOT contain a timestamp or any value that changes
+     * between attempts. The server (POST /cloud/pay) keys its entire dedup and
+     * recovery logic on `ref` — re-POSTing the SAME ref returns the existing
+     * result instead of starting a second card read. A ref that changed each
+     * attempt (e.g. with Date.now()) would make every retry a NEW command and
+     * reopen a double-charge window. `paymentLine.cid` is Odoo's stable,
+     * per-line client id, so one physical payment line always maps to one ref.
+     */
+    _payRef(order, paymentLine) {
+        return `ODOO-${order.uid}-${paymentLine.cid}`;
+    }
+
+    /**
      * Called when cashier clicks "Charge" for Aslan Omni.
-     * POSTs to /cloud/pay (long-poll, holds up to 95s),
-     * falls back to polling /cloud/pay/:id/status if connection drops.
+     * POSTs to /cloud/pay (long-poll, holds up to 95s). On ANY failure before a
+     * result is known, it re-POSTs with the SAME ref — the server returns the
+     * completed result, a 409 + commandId (then we poll), or safely re-relays.
+     * This recovery covers a drop during the initial long-poll too, where the
+     * older "poll only if we already have a commandId" approach gave up blindly.
      */
     async sendPaymentRequest(order) {
         const paymentLine = order.selected_paymentline;
@@ -32,68 +51,88 @@ export class AslanOmniPaymentInterface extends AbstractPaymentInterface {
         }
 
         const amountCents = Math.round(paymentLine.amount * 100);
-        const ref = `ODOO-${order.uid}-${Date.now()}`;
+        const ref = this._payRef(order, paymentLine);
         paymentLine.aslan_omni_ref = ref;
 
         paymentLine.set_payment_status('waitingCard');
 
-        let commandId = null;
-        try {
-            const resp = await this._fetchWithTimeout(`${apiUrl}/cloud/pay`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`,
-                },
-                body: JSON.stringify({
-                    ref,
-                    amountCents,
-                    cashierId: String(this.pos.cashier?.id || ''),
-                    tillId: String(config.id),
-                    description: order.name,
-                }),
-            }, PAYMENT_TIMEOUT_MS);
+        const payload = JSON.stringify({
+            ref,
+            amountCents,
+            cashierId: String(this.pos.cashier?.id || ''),
+            tillId: String(config.id),
+            description: order.name,
+        });
 
-            if (resp.status === 503) {
-                this._showError('Terminal non connecté. Vérifiez que le terminal Aslan Omni est allumé.');
+        // Attempt the long-poll; on a network failure, re-POST the same ref so
+        // the server re-attaches us to the in-flight/completed command rather
+        // than starting a new one. Bounded so a persistent outage still ends.
+        for (let attempt = 0; attempt <= MAX_RECOVERY_ATTEMPTS; attempt++) {
+            try {
+                const resp = await this._fetchWithTimeout(`${apiUrl}/cloud/pay`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`,
+                    },
+                    body: payload,
+                }, PAYMENT_TIMEOUT_MS);
+
+                if (resp.status === 503) {
+                    this._showError('Terminal non connecté. Vérifiez que le terminal Aslan Omni est allumé.');
+                    paymentLine.set_payment_status('retry');
+                    return false;
+                }
+
+                const data = await resp.json();
+
+                // 409 = this ref is already executing on the terminal. Attach to
+                // it by polling its status; never start a parallel card read.
+                if (resp.status === 409 && data.commandId) {
+                    return await this._pollForResult(apiUrl, apiKey, data.commandId, paymentLine, ref);
+                }
+
+                if (!resp.ok) {
+                    this._showError(`Erreur serveur: ${data.error || resp.status}`);
+                    paymentLine.set_payment_status('retry');
+                    return false;
+                }
+
+                // 200 — the long-poll returned the terminal's final result.
+                return this._handleResult(data, paymentLine, ref);
+
+            } catch (_err) {
+                // Network dropped. We may or may not have a commandId — it does
+                // not matter: re-POSTing the SAME ref is the recovery path the
+                // server is built for. Keep the UI in waitingCard and retry.
+                if (attempt < MAX_RECOVERY_ATTEMPTS) {
+                    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+                    continue;
+                }
+                this._showError('Erreur réseau. Vérifiez la connexion internet, puis relancez le paiement (la carte ne sera pas débitée deux fois).');
                 paymentLine.set_payment_status('retry');
                 return false;
             }
-
-            const data = await resp.json();
-
-            if (resp.status === 409 && data.commandId) {
-                // Payment already in progress — poll for result
-                commandId = data.commandId;
-                return await this._pollForResult(apiUrl, apiKey, commandId, paymentLine, ref);
-            }
-
-            if (!resp.ok) {
-                this._showError(`Erreur serveur: ${data.error || resp.status}`);
-                paymentLine.set_payment_status('retry');
-                return false;
-            }
-
-            // commandId from the response body (for receipt / status endpoint)
-            commandId = data.commandId;
-            return this._handleResult(data, paymentLine, ref);
-
-        } catch (err) {
-            // Network error mid-long-poll — fall back to polling if we know the commandId
-            if (commandId) {
-                return await this._pollForResult(apiUrl, apiKey, commandId, paymentLine, ref);
-            }
-            this._showError('Erreur réseau. Vérifiez la connexion internet.');
-            paymentLine.set_payment_status('retry');
-            return false;
         }
+        return false;
     }
 
     async sendPaymentCancel(order, uuid) {
-        // NapsPay cancellation is terminal-side only (back button on terminal).
-        // From Odoo we cannot abort mid-flight — just reset UI.
+        // IMPORTANT: there is no server-side abort. Once /cloud/pay has relayed
+        // the command, the terminal is reading a card and only the terminal (its
+        // own back button / timeout) can stop it. From Odoo we can only reset the
+        // POS UI — we CANNOT guarantee the terminal stopped.
+        //
+        // This is safe against double-charging ONLY because the ref is stable
+        // (_payRef): if the cashier re-charges the same line, /cloud/pay sees the
+        // same ref and re-attaches to the existing command instead of starting a
+        // second card read. We warn the cashier so they verify the terminal.
         const paymentLine = order.selected_paymentline;
         if (paymentLine) paymentLine.set_payment_status('retry');
+        this._showError(
+            "Annulation côté caisse uniquement. Si le terminal demande encore la carte, "
+            + "annulez AUSSI sur le terminal (bouton retour). Relancer le paiement ne débite pas deux fois.",
+        );
         return true;
     }
 
@@ -147,9 +186,14 @@ export class AslanOmniPaymentInterface extends AbstractPaymentInterface {
             return false;
         }
 
-        // originalRef is the ref that was used in the original /cloud/pay call.
-        const originalRef = paymentLine.aslan_omni_ref || `ODOO-${order.uid}`;
-        const reverseRef  = `REV-${originalRef}-${Date.now()}`;
+        // originalRef must match the ref used in the original /cloud/pay call so
+        // the server can tie the reversal to it. Fall back to the stable scheme
+        // (same as _payRef) when the stored ref is somehow missing.
+        const originalRef = paymentLine.aslan_omni_ref || this._payRef(order, paymentLine);
+        // The reversal's OWN ref is also stable (no Date.now()): the server keys
+        // /cloud/reverse dedup on ref too, so retrying a dropped reversal must
+        // reuse the same ref to avoid issuing a second void.
+        const reverseRef  = `REV-${originalRef}`;
 
         paymentLine.set_payment_status('waitingCard');
 
