@@ -23,7 +23,7 @@
        t-inherit-mode="extension"
        owl="1">
         <xpath expr="//div[hasclass('pos-receipt')]" position="inside">
-            <t t-foreach="props.order._getOrderedPaymentlines()" t-as="line" t-key="line.uuid">
+            <t t-foreach="props.order.payment_ids" t-as="line" t-key="line.uuid">
                 <t t-if="line.payment_method.use_payment_terminal === 'aslan_omni' and line.aslan_omni_result">
                     <AslanOmniReceiptCardBlock
                         cardScheme="line.aslan_omni_result.cardScheme"

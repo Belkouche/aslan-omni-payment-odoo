@@ -1,6 +1,6 @@
 {
     'name': 'Aslan Omni Payment',
-    'version': '15.0.1.0.0',
+    'version': '20.0.1.0.0',
     'category': 'Point of Sale',
     'summary': 'Aslan Omni card terminal integration for Odoo POS',
     'author': 'Aslan',
@@ -10,7 +10,7 @@
         'views/pos_config_views.xml',
     ],
     'assets': {
-        'point_of_sale.assets': [
+        'point_of_sale._assets_pos': [
             'aslan_omni_payment/static/src/js/AslanOmniPaymentInterface.js',
             'aslan_omni_payment/static/src/js/AslanOmniPairingWidget.js',
             'aslan_omni_payment/static/src/js/AslanOmniReceiptLine.js',

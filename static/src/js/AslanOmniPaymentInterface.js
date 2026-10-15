@@ -1,13 +1,20 @@
 /** @odoo-module **/
 
-import { AbstractPaymentInterface } from 'point_of_sale.payment';
+import { AbstractPaymentInterface } from '@point_of_sale/payment';
 import { registry } from '@web/core/registry';
+import { AlertDialog } from '@web/core/confirmation_dialog/confirmation_dialog';
+import { useService } from '@web/core/utils/hooks';
 
 const PAYMENT_TIMEOUT_MS = 97000;  // 2s buffer over server's 95s long-poll
 const POLL_INTERVAL_MS   = 3000;
 const MAX_RECOVERY_ATTEMPTS = 2;   // re-POSTs after the first, before giving up
 
 export class AslanOmniPaymentInterface extends AbstractPaymentInterface {
+
+    setup() {
+        super.setup(...arguments);
+        this.dialog = useService('dialog');
+    }
 
     /**
      * Stable idempotency key for a payment line.
@@ -56,10 +63,11 @@ export class AslanOmniPaymentInterface extends AbstractPaymentInterface {
 
         paymentLine.set_payment_status('waitingCard');
 
+        const cashier = this.pos.get_cashier ? this.pos.get_cashier() : this.pos.cashier;
         const payload = JSON.stringify({
             ref,
             amountCents,
-            cashierId: String(this.pos.cashier?.id || ''),
+            cashierId: String(cashier?.id || ''),
             tillId: String(config.id),
             description: order.name,
         });
@@ -286,10 +294,7 @@ export class AslanOmniPaymentInterface extends AbstractPaymentInterface {
     }
 
     _showError(msg) {
-        this.pos.env.services.popup.add(
-            this.pos.env.services.popup.components.ErrorPopup,
-            { title: 'Aslan Omni', body: msg },
-        );
+        this.dialog.add(AlertDialog, { title: 'Aslan Omni', body: msg });
     }
 
     async _fetchWithTimeout(url, options, timeoutMs) {

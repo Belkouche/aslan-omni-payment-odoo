@@ -22,7 +22,7 @@
                                        placeholder="(pair terminal to fill)"/>
 
                                 <label string="Associer le terminal"
-                                       attrs="{'invisible': [('aslan_omni_device_id', '!=', False)]}"/>
+                                       invisible="aslan_omni_device_id != False"/>
                                 <field name="aslan_omni_pair_widget" widget="aslan_omni_pairing" nolabel="1"/>
                             </div>
                         </div>
