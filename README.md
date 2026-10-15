@@ -1,6 +1,6 @@
 # Aslan Omni Payment — Odoo POS integration
 
-An **Odoo 15 Point of Sale** add-on that turns an **Aslan Omni card terminal**
+An **Odoo 20 Point of Sale** add-on that turns an **Aslan Omni card terminal**
 into a payment method inside Odoo. When a cashier rings up an order and chooses
 "Aslan Omni", Odoo tells the terminal (over the Aslan cloud) how much to charge;
 the customer taps or inserts their card on the terminal; the result (approved /
@@ -134,7 +134,7 @@ why the stable ref is load-bearing here.
 
 ## 4. Installation
 
-**Prerequisites:** Odoo 15, the `point_of_sale` module, and an Aslan Omni
+**Prerequisites:** Odoo 20, the `point_of_sale` module, and an Aslan Omni
 terminal that can reach the cloud API.
 
 1. Copy this folder into your Odoo add-ons path, named exactly
@@ -283,7 +283,7 @@ yet — see [Known limitations](#13-known-limitations).)
 
 | File | What it does |
 |------|--------------|
-| `__manifest__.py` | Odoo module descriptor. Declares the dependency on `point_of_sale`, loads the XML data/views, and registers the six front-end assets (3 JS + 3 QWeb templates) into the POS asset bundle. Version `15.0.1.0.0`, LGPL-3. |
+| `__manifest__.py` | Odoo module descriptor. Declares the dependency on `point_of_sale`, loads the XML data/views, and registers the six front-end assets (3 JS + 3 QWeb templates) into the POS asset bundle. Version `20.0.1.0.0`, LGPL-3. |
 | `data/payment_method.xml` | Creates the `pos.payment.method` record named "Aslan Omni" (`noupdate="1"` so admins can edit it without it being reset on upgrade). |
 | `views/pos_config_views.xml` | Adds the **Aslan Omni** settings block to the Point of Sale configuration form: API URL field, read-only Device ID and API Key, and the pairing widget mount point. |
 | `models/pos_config.py` | Extends `pos.config` with `aslan_omni_device_id`, `aslan_omni_api_key` (group-restricted — see §11), and `aslan_omni_api_url` (with an HTTPS-only `@api.constrains`). `aslan_omni_pair_widget` is a non-stored dummy field that exists only as a mount point for the Owl pairing widget. |
@@ -357,9 +357,7 @@ For deeper debugging, open the browser console: all failures surface through
   must be cancelled on the terminal. A real abort needs a new terminal-protocol
   message in `aslan-omni-api` (an SSE "AbortCommand" + a `/cloud/pay/:id/cancel`
   endpoint). Until that exists, rely on the stable-ref safety net (§8.3).
-- **Odoo 15 only.** The asset bundle keys (`point_of_sale.assets`) and the
-  `AbstractPaymentInterface` import path are 15.x-specific. A 16/17 port needs
-  the updated POS payment-terminal API.
+- **Odoo 20.** Tested against Odoo 20. The asset bundle key (`point_of_sale._assets_pos`), import paths (`@point_of_sale/payment`, `@web/core/*`), `dialog` service, `payment_ids` accessor, and inline `invisible=` domain syntax are all 17+/20-specific. A downport to 15/16 would need the corresponding reversions.
 - **No automated tests.** The payment state machine (pay / recover / reverse) is
   exactly the kind of logic that benefits from QUnit tests; none ship today.
   Until they do, test changes manually against a terminal or an emulator.
