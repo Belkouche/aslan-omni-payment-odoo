@@ -3,6 +3,7 @@
 import { Component, useState, useRef } from '@odoo/owl';
 import { registry } from '@web/core/registry';
 import { useService } from '@web/core/utils/hooks';
+import { _t } from '@web/core/l10n/translation';
 
 export class AslanOmniPairingWidget extends Component {
     setup() {
