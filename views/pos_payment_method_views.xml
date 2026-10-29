@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="pos_payment_method_view_form_inherit_aslan_omni" model="ir.ui.view">
+        <field name="name">pos.payment.method.form.inherit.aslan.omni</field>
+        <field name="model">pos.payment.method</field>
+        <field name="inherit_id" ref="point_of_sale.pos_payment_method_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <notebook invisible="payment_provider != 'aslan_omni'">
+                    <page name="aslan_omni_settings" string="Aslan Omni">
+                        <group>
+                            <field name="aslan_omni_api_url" invisible="payment_provider != 'aslan_omni'"/>
+                            <field name="aslan_omni_device_id" readonly="1" invisible="payment_provider != 'aslan_omni'"/>
+                            <field name="aslan_omni_api_key" password="True" readonly="1" invisible="payment_provider != 'aslan_omni'"/>
+                            <field name="aslan_omni_pair_widget" widget="aslan_omni_pairing" nolabel="1" invisible="payment_provider != 'aslan_omni'"/>
+                        </group>
+                    </page>
+                </notebook>
+            </xpath>
+        </field>
+    </record>
+</odoo>

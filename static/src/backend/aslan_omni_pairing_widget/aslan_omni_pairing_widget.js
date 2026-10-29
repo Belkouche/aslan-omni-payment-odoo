@@ -3,7 +3,6 @@
 import { Component, useState, useRef } from '@odoo/owl';
 import { registry } from '@web/core/registry';
 import { useService } from '@web/core/utils/hooks';
-import { _t } from '@web/core/l10n/translation';
 
 export class AslanOmniPairingWidget extends Component {
     setup() {
@@ -28,9 +27,9 @@ export class AslanOmniPairingWidget extends Component {
         const code = this.state.code;
         if (code.length !== 8) return;
 
-        const configId = this.props.record.resId;
-        const [config] = await this.orm.read('pos.config', [configId], ['aslan_omni_api_url']);
-        const apiUrl = config.aslan_omni_api_url || 'https://api.aslanpay.ma';
+        const resId = this.props.record.resId;
+        const [paymentMethod] = await this.orm.read('pos.payment.method', [resId], ['aslan_omni_api_url']);
+        const apiUrl = paymentMethod.aslan_omni_api_url || 'https://api.aslanpay.ma';
 
         if (!apiUrl.startsWith('https://')) {
             this.state.step = 'error';
@@ -51,7 +50,7 @@ export class AslanOmniPairingWidget extends Component {
                 this.state.errorMsg = data.error || `Erreur ${resp.status}`;
                 return;
             }
-            await this.orm.write('pos.config', [configId], {
+            await this.orm.write('pos.payment.method', [resId], {
                 aslan_omni_device_id: data.deviceId,
                 aslan_omni_api_key: data.apiKey,
             });
@@ -70,13 +69,13 @@ export class AslanOmniPairingWidget extends Component {
     async onRevoke() {
         if (!confirm('Dissocier ce terminal Aslan Omni ? Le terminal devra être réassocié pour accepter des paiements depuis Odoo.')) return;
 
-        const configId = this.props.record.resId;
-        const [config] = await this.orm.read('pos.config', [configId], [
+        const resId = this.props.record.resId;
+        const [paymentMethod] = await this.orm.read('pos.payment.method', [resId], [
             'aslan_omni_api_url', 'aslan_omni_api_key', 'aslan_omni_device_id',
         ]);
-        const apiUrl   = config.aslan_omni_api_url   || 'https://api.aslanpay.ma';
-        const apiKey   = config.aslan_omni_api_key;
-        const deviceId = config.aslan_omni_device_id;
+        const apiUrl   = paymentMethod.aslan_omni_api_url   || 'https://api.aslanpay.ma';
+        const apiKey   = paymentMethod.aslan_omni_api_key;
+        const deviceId = paymentMethod.aslan_omni_device_id;
 
         this.state.step = 'revoking';
         try {
@@ -94,7 +93,7 @@ export class AslanOmniPairingWidget extends Component {
             }
         } finally {
             // Always clear local fields regardless of network outcome.
-            await this.orm.write('pos.config', [configId], {
+            await this.orm.write('pos.payment.method', [resId], {
                 aslan_omni_device_id: false,
                 aslan_omni_api_key: false,
             });

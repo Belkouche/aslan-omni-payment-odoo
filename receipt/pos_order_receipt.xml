@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo>
+    <data>
+        <template id="aslan_omni_payment.pos_order_receipt" inherit_id="point_of_sale.pos_order_receipt">
+            <xpath expr="//t[@name='payments']" position="after">
+                <t t-foreach="payments" t-as="payment" name="aslan_omni_card_details">
+                    <tr t-if="payment.get('aslan_omni_result')" class="aslan-omni-card-details">
+                        <td colspan="2" style="border-top:1px dashed #ccc;padding-top:4px;font-size:0.85em;">
+                            <div style="text-align:center;font-weight:bold;">PAIEMENT PAR CARTE</div>
+                            <div t-if="payment['aslan_omni_result'].get('cardScheme')">
+                                Carte : <t t-out="payment['aslan_omni_result']['cardScheme']" />
+                                <t t-if="payment['aslan_omni_result'].get('cardNumber')"> <t t-out="payment['aslan_omni_result']['cardNumber']" /></t>
+                            </div>
+                            <div t-if="payment['aslan_omni_result'].get('authNumber')">
+                                Auth : <t t-out="payment['aslan_omni_result']['authNumber']" />
+                            </div>
+                            <div t-if="payment['aslan_omni_result'].get('rrn')">
+                                RRN : <t t-out="payment['aslan_omni_result']['rrn']" />
+                            </div>
+                        </td>
+                    </tr>
+                </t>
+            </xpath>
+        </template>
+    </data>
+</odoo>

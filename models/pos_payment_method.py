@@ -2,18 +2,23 @@ from odoo import api, fields, models
 from odoo.exceptions import ValidationError
 
 
-class PosConfig(models.Model):
-    _inherit = 'pos.config'
+class PosPaymentMethod(models.Model):
+    _inherit = 'pos.payment.method'
+
+    def _get_terminal_provider_selection(self):
+        return super()._get_terminal_provider_selection() + [('aslan_omni', 'Aslan Omni')]
 
     aslan_omni_device_id = fields.Char(
         string='Aslan Omni Device ID',
         readonly=True,
+        copy=False,
         help='Device ID returned after pairing with the Aslan Omni terminal.',
     )
     # Restricted to POS managers — cashiers must not be able to read the bearer token.
     aslan_omni_api_key = fields.Char(
         string='Aslan Omni API Key',
         readonly=True,
+        copy=False,
         groups='point_of_sale.group_pos_manager,base.group_system',
         help='Merchant API key returned after pairing. Sent in Authorization header.',
     )
@@ -31,11 +36,19 @@ class PosConfig(models.Model):
                 raise ValidationError(
                     'Aslan Omni API URL must use HTTPS to protect credentials in transit.'
                 )
+
+    @api.model
+    def _load_pos_data_fields(self, config):
+        params = super()._load_pos_data_fields(config)
+        params += ['aslan_omni_device_id', 'aslan_omni_api_key', 'aslan_omni_api_url']
+        return params
+
+    # Non-stored dummy field — exists only as a mount point for the Owl pairing widget.
     aslan_omni_pair_widget = fields.Char(
         compute='_compute_pair_widget',
         store=False,
     )
 
     def _compute_pair_widget(self):
-        for r in self:
-            r.aslan_omni_pair_widget = ''
+        for record in self:
+            record.aslan_omni_pair_widget = ''

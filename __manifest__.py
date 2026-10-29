@@ -1,22 +1,25 @@
 {
     'name': 'Aslan Omni Payment',
     'version': '20.0.1.0.0',
-    'category': 'Point of Sale',
+    'category': 'Sales/Point of Sale',
     'summary': 'Aslan Omni card terminal integration for Odoo POS',
     'author': 'Aslan',
     'depends': ['point_of_sale'],
     'data': [
-        'data/payment_method.xml',
-        'views/pos_config_views.xml',
+        'views/pos_payment_method_views.xml',
+        'receipt/pos_order_receipt.xml',
     ],
     'assets': {
         'point_of_sale._assets_pos': [
-            'aslan_omni_payment/static/src/js/AslanOmniPaymentInterface.js',
-            'aslan_omni_payment/static/src/js/AslanOmniPairingWidget.js',
-            'aslan_omni_payment/static/src/js/AslanOmniReceiptLine.js',
-            'aslan_omni_payment/static/src/xml/AslanOmniPaymentScreen.xml',
-            'aslan_omni_payment/static/src/xml/AslanOmniPairingWidget.xml',
-            'aslan_omni_payment/static/src/xml/AslanOmniReceiptLine.xml',
+            'aslan_omni_payment/static/src/app/**/*',
+            'aslan_omni_payment/static/src/overrides/**/*',
+        ],
+        'point_of_sale.payment_terminals': [
+            'aslan_omni_payment/static/src/app/payment_aslan_omni.js',
+            'aslan_omni_payment/static/src/overrides/models/pos_payment.js',
+        ],
+        'web.assets_backend': [
+            'aslan_omni_payment/static/src/backend/aslan_omni_pairing_widget/*',
         ],
     },
     'installable': True,
