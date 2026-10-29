@@ -6,9 +6,12 @@ into a payment method inside Odoo. When a cashier rings up an order and chooses
 the customer taps or inserts their card on the terminal; the result (approved /
 declined) flows back into Odoo and onto the receipt.
 
-If you have never touched this code before, read this file top to bottom — it
-explains not just *how* to use it, but *why* it is built the way it is,
-especially around the parts that handle money.
+**If you have never touched this code before, read this file top to bottom
+before changing anything.** It is written to teach, not just describe: every
+section explains *why* the code is shaped the way it is, especially around the
+parts that touch money or credentials. Skipping to "the file I need to edit"
+is how the original double-charge bug (§8.1) got introduced — read the money
+rules first.
 
 ---
 
@@ -18,16 +21,17 @@ especially around the parts that handle money.
 2. [Who talks to whom (architecture)](#2-who-talks-to-whom-architecture)
 3. [What a payment actually looks like, step by step](#3-what-a-payment-actually-looks-like-step-by-step)
 4. [Installation](#4-installation)
-5. [Pairing a terminal (one-time setup per till)](#5-pairing-a-terminal-one-time-setup-per-till)
+5. [Pairing a terminal (one-time setup per payment method)](#5-pairing-a-terminal-one-time-setup-per-payment-method)
 6. [Taking a payment (the cashier's view)](#6-taking-a-payment-the-cashiers-view)
 7. [Reversing (voiding) a payment](#7-reversing-voiding-a-payment)
 8. [The money-safety rules (READ THIS before editing payment code)](#8-the-money-safety-rules-read-this-before-editing-payment-code)
 9. [The files, one by one](#9-the-files-one-by-one)
-10. [The server API this add-on calls](#10-the-server-api-this-add-on-calls)
-11. [Security model](#11-security-model)
-12. [Troubleshooting](#12-troubleshooting)
-13. [Known limitations](#13-known-limitations)
-14. [Glossary](#14-glossary)
+10. [Where Odoo 20 bends this add-on's design (read if you're new to Odoo POS internals)](#10-where-odoo-20-bends-this-add-ons-design-read-if-youre-new-to-odoo-pos-internals)
+11. [The server API this add-on calls](#11-the-server-api-this-add-on-calls)
+12. [Security model — including a known gap](#12-security-model--including-a-known-gap)
+13. [Troubleshooting](#13-troubleshooting)
+14. [Known limitations](#14-known-limitations)
+15. [Glossary](#15-glossary)
 
 ---
 
@@ -86,7 +90,7 @@ The happy path and the three failure paths, drawn out:
 Cashier clicks "Charge"
    │
    ▼
-Odoo POST /cloud/pay  { ref, amountCents, ... }     ◀── ref = "ODOO-<order.uid>-<line.cid>"  (STABLE, see §8)
+Odoo POST /cloud/pay  { ref, amountCents, ... }     ◀── ref = "ODOO-<order.uuid>-<line.uuid>"  (STABLE, see §8)
    │                                                      amountCents = line amount × 100
    ▼
 Cloud stores the command keyed by `ref`, pushes "PayCommand" to the terminal,
@@ -99,7 +103,7 @@ Customer taps card → terminal authorises via NapsPay → terminal POSTs result
 Cloud answers the still-open Odoo request with { status: "approved", cardScheme, authNumber, stan, rrn, ... }
    │
    ▼
-Odoo: payment line → "done", stores masked card details for the receipt.  ✅
+Odoo: payment line → "done", stores masked card details in line.uiState for the receipt.  ✅
 ```
 
 ### Failure path A — terminal not connected
@@ -117,8 +121,8 @@ expiré"*. No money moved.
 This is where the design earns its keep. The Odoo request dies with a network
 error — but the terminal may still be reading the card, and the cloud may have
 already recorded (or completed) the command. The add-on does **not** give up. It
-**re-POSTs `/cloud/pay` with the exact same `ref`**, up to a few times. Because
-the ref is stable, the server recognises it and:
+**re-POSTs `/cloud/pay` with the exact same `ref`**, up to `MAX_RECOVERY_ATTEMPTS`
+times. Because the ref is stable, the server recognises it and:
 
 - if the command already **completed** → returns the real result (we show
   approved/declined — correct, no double charge);
@@ -134,12 +138,19 @@ why the stable ref is load-bearing here.
 
 ## 4. Installation
 
-**Prerequisites:** Odoo 20, the `point_of_sale` module, and an Aslan Omni
+**Prerequisites:** Odoo **20.0**, the `point_of_sale` module, and an Aslan Omni
 terminal that can reach the cloud API.
+
+> This add-on targets Odoo 20.0 specifically — it uses the 20.0 POS JavaScript
+> architecture (`pos_payment_providers` registry, `pos.payment.method`-based
+> terminal config, `line.uiState`). It will **not** install cleanly on Odoo
+> 16/17/18/19; see [section 10](#10-where-odoo-20-bends-this-add-ons-design-read-if-youre-new-to-odoo-pos-internals)
+> if you need to understand why, or [Known limitations](#14-known-limitations)
+> if you need an older version.
 
 1. Copy this folder into your Odoo add-ons path, named exactly
    **`aslan_omni_payment`** (the folder name is the technical module name that
-   every asset path and the payment-method key depend on):
+   every asset path depends on):
 
    ```
    <your-addons-path>/aslan_omni_payment/
@@ -150,42 +161,67 @@ terminal that can reach the cloud API.
 
 3. Install **"Aslan Omni Payment"** from the Apps menu.
 
-That creates a payment method named **"Aslan Omni"** (see
-`data/payment_method.xml`) and adds an **Aslan Omni** section to each Point of
-Sale's settings form.
+Unlike most payment-terminal add-ons, this one does **not** auto-create a
+payment method for you (see the note at the end of
+[section 5](#5-pairing-a-terminal-one-time-setup-per-payment-method) for why).
+After installing, go create one:
 
-> **Module name matters.** The manifest wires assets under
+4. **Point of Sale → Configuration → Payment Methods → New.**
+   - Give it a name (e.g. "Aslan Omni").
+   - Set **Type** to `Bank`.
+   - Pick a **Journal** (a bank journal for your company — required by Odoo
+     for any non-cash payment method).
+   - Set **Use a Payment Terminal** to **Aslan Omni**. An **Aslan Omni**
+     settings page appears in the same form.
+   - Add this payment method to your Point of Sale's configuration
+     (**Point of Sale → Configuration → Point of Sale → Payment Methods**).
+
+> **Module name matters.** The manifest wires JS/XML assets under
 > `aslan_omni_payment/static/...` and registers the payment interface under the
-> key `aslan_omni`. If you rename the folder, those paths break. Keep it
-> `aslan_omni_payment`.
+> key `aslan_omni`, which must match the `payment_provider` selection value
+> declared in `models/pos_payment_method.py`. If you rename the folder, the
+> asset paths break; if you rename the key in one place without the other, the
+> terminal silently never activates. Keep the folder named `aslan_omni_payment`.
 
 ---
 
-## 5. Pairing a terminal (one-time setup per till)
+## 5. Pairing a terminal (one-time setup per payment method)
 
 Pairing exchanges a short code shown on the terminal for a **merchant API key**
-that Odoo stores and sends on every future request. You do this once per Point
-of Sale.
+that Odoo stores and sends on every future request. You do this once per
+payment method (most shops only need one).
 
-1. In Odoo: **Point of Sale → Configuration → Point of Sale**, open the till you
-   want to pair. Scroll to the **Aslan Omni** section.
-2. Confirm the **Aslan API URL** (defaults to `https://api.aslanpay.ma`). It
-   **must** be `https://` — the add-on refuses anything else (credentials travel
-   on this URL).
+1. Open the payment method you created above (**Point of Sale → Configuration
+   → Payment Methods**), with **Use a Payment Terminal = Aslan Omni**. Open the
+   **Aslan Omni** tab on the form.
+2. Confirm the **Aslan Omni API URL** (defaults to `https://api.aslanpay.ma`).
+   It **must** be `https://` — the add-on refuses anything else (credentials
+   travel on this URL).
 3. On the **terminal**, start pairing ("Associer avec Odoo"). It shows an
    **8-character code** (valid for 120 seconds).
 4. Type that code into the pairing widget in Odoo and click **Associer**.
-5. On success the widget shows ✅ *Terminal associé* with the Device ID, and Odoo
-   has silently stored the **Device ID** and the **API Key**.
+5. On success the widget shows ✅ *Terminal associé* with the Device ID, and
+   Odoo has silently stored the **Device ID** and the **API Key** on this
+   payment method record.
 
 Under the hood: the widget calls `POST /cloud/pair { pairingCode }`; the server
 returns `{ deviceId, apiKey, merchantId, merchantName }`; the widget writes
-`aslan_omni_device_id` and `aslan_omni_api_key` onto the `pos.config` record.
+`aslan_omni_device_id` and `aslan_omni_api_key` onto the `pos.payment.method`
+record via `this.orm.write(...)`.
 
 **Re-associate / Dissociate.** The ✅ panel offers both. *Dissocier* calls
 `POST /cloud/devices/:deviceId/revoke` (best effort) and **always** clears the
 local key and device id afterwards, even if that network call fails — so a
 revoke can never leave a dead key behind in Odoo.
+
+> **Why there is no pre-installed "Aslan Omni" payment method record.** Earlier
+> versions of this add-on shipped a data file that auto-created one. That
+> turned out to be the wrong default: every `pos.payment.method` needs a
+> **company-specific** `journal_id`, which the module cannot know in advance
+> for every installation. No core Odoo terminal-provider add-on (Stripe,
+> Adyen, Viva Wallet, …) ships a pre-created payment method either — they all
+> expect the integrator to create it by hand, as step 4 above does. This is
+> normal Odoo practice, not a missing feature.
 
 ---
 
@@ -206,11 +242,11 @@ only; it does **not** stop the terminal.
 
 ## 7. Reversing (voiding) a payment
 
-From a paid order, Odoo's **Reverse** action calls `sendReversal`, which issues
-`POST /cloud/reverse`. A reversal needs the original transaction's **STAN**
-(System Trace Audit Number), which was saved on the payment line at approval
-time. If the STAN is missing, the reversal is refused with a clear message
-rather than sending a malformed void.
+From a paid order, Odoo's **Reverse** action calls `sendReversal(line)`, which
+issues `POST /cloud/reverse`. A reversal needs the original transaction's
+**STAN** (System Trace Audit Number), which was saved in `line.uiState.aslanOmniResult`
+at approval time. If the STAN is missing, the reversal is refused with a clear
+message rather than sending a malformed void.
 
 Like a payment, a reversal is a relayed long-poll command, and its own `ref`
 (`REV-<original-ref>`) is **stable**, so a dropped reversal can be retried safely
@@ -231,15 +267,16 @@ The server keys its **entire** deduplication and recovery logic on `ref`
 the server knows "this is the same payment, don't start a second card read — give
 me back the existing result."
 
-This add-on builds the ref in **one** place, `_payRef()`:
+This add-on builds the ref in **one** place, `_payRef()`, in
+`static/src/app/payment_aslan_omni.js`:
 
 ```js
-_payRef(order, paymentLine) {
-    return `ODOO-${order.uid}-${paymentLine.cid}`;   // order id + stable per-line id
+_payRef(line) {
+    return `ODOO-${line.pos_order_id.uuid}-${line.uuid}`;   // order uuid + stable per-line uuid
 }
 ```
 
-`paymentLine.cid` is Odoo's stable client id for that payment line — it does not
+`line.uuid` is Odoo's stable client id for that payment line — it does not
 change between retries. So one physical payment line always maps to exactly one
 ref.
 
@@ -254,8 +291,8 @@ ref.
 When the network drops mid-payment, we do **not** know whether the charge
 happened. The only safe move is to ask the server, and the server's answer to
 "re-POST the same ref" is exactly the recovery we need (completed → result,
-pending → 409+poll, timed-out → re-relay). The payment loop does this
-automatically, bounded by `MAX_RECOVERY_ATTEMPTS`.
+pending → 409+poll, timed-out → re-relay). The payment loop in
+`sendPaymentRequest` does this automatically, bounded by `MAX_RECOVERY_ATTEMPTS`.
 
 > ⚠️ **The original bug this replaced:** the old code only polled if it *already*
 > had a `commandId`, which it only learned *after* the first response parsed. A
@@ -275,7 +312,7 @@ re-charges the same line after a cosmetic cancel, the stable ref makes the serve
 re-attach to the existing command instead of starting a new card read. Removing
 the stable ref would silently reopen this hole. (A true remote-abort would
 require a new terminal-protocol message in `aslan-omni-api`; it does not exist
-yet — see [Known limitations](#13-known-limitations).)
+yet — see [Known limitations](#14-known-limitations).)
 
 ---
 
@@ -283,20 +320,70 @@ yet — see [Known limitations](#13-known-limitations).)
 
 | File | What it does |
 |------|--------------|
-| `__manifest__.py` | Odoo module descriptor. Declares the dependency on `point_of_sale`, loads the XML data/views, and registers the six front-end assets (3 JS + 3 QWeb templates) into the POS asset bundle. Version `20.0.1.0.0`, LGPL-3. |
-| `data/payment_method.xml` | Creates the `pos.payment.method` record named "Aslan Omni" (`noupdate="1"` so admins can edit it without it being reset on upgrade). |
-| `views/pos_config_views.xml` | Adds the **Aslan Omni** settings block to the Point of Sale configuration form: API URL field, read-only Device ID and API Key, and the pairing widget mount point. |
-| `models/pos_config.py` | Extends `pos.config` with `aslan_omni_device_id`, `aslan_omni_api_key` (group-restricted — see §11), and `aslan_omni_api_url` (with an HTTPS-only `@api.constrains`). `aslan_omni_pair_widget` is a non-stored dummy field that exists only as a mount point for the Owl pairing widget. |
-| `static/src/js/AslanOmniPaymentInterface.js` | **The core.** Subclass of Odoo's `AbstractPaymentInterface`. Implements `sendPaymentRequest` (pay + recovery loop), `sendPaymentCancel` (UI-only reset + warning), `sendReversal` (void), `_pollForResult` (fallback polling), result handling, and defensive PAN masking. Registered under the key `aslan_omni`. |
-| `static/src/js/AslanOmniPairingWidget.js` | Owl component for the settings form: enter the 8-char code, call `/cloud/pair`, store the returned key/device id, and re-pair / revoke. |
-| `static/src/js/AslanOmniReceiptLine.js` | Tiny Owl component that renders the card-details block on the receipt. |
-| `static/src/xml/AslanOmniPairingWidget.xml` | QWeb template for the pairing widget's idle / loading / done / error / revoking states. |
-| `static/src/xml/AslanOmniReceiptLine.xml` | QWeb template that appends the "PAIEMENT PAR CARTE" block to the POS receipt for Aslan Omni lines. |
-| `static/src/xml/AslanOmniPaymentScreen.xml` | Intentionally empty — the default POS payment screen is used as-is. |
+| `__manifest__.py` | Odoo module descriptor. Declares the dependency on `point_of_sale`, loads the views and receipt template, and splits front-end assets across **three** bundles — see [§10](#10-where-odoo-20-bends-this-add-ons-design-read-if-youre-new-to-odoo-pos-internals) for why there are three, not one. Version `20.0.1.0.0`, LGPL-3. |
+| `models/pos_payment_method.py` | Extends `pos.payment.method` (not `pos.config` — see §10). Adds `aslan_omni_device_id`, `aslan_omni_api_key` (group-restricted — see §12), `aslan_omni_api_url` (HTTPS-only via `@api.constrains`), registers `'aslan_omni'` in `_get_terminal_provider_selection()`, and pushes all four fields to the POS client via `_load_pos_data_fields`. `aslan_omni_pair_widget` is a non-stored dummy field that exists only as a mount point for the Owl pairing widget. |
+| `views/pos_payment_method_views.xml` | Adds the **Aslan Omni** notebook page to the standard `pos.payment.method` form (`point_of_sale.pos_payment_method_view_form`): API URL field, read-only Device ID and API Key, and the pairing widget. The page is shown only when `payment_provider == 'aslan_omni'`. |
+| `static/src/app/payment_aslan_omni.js` | **The core.** Subclass of `PaymentInterface`. Implements `sendPaymentRequest` (pay + recovery loop), `sendPaymentCancel` (UI-only reset + warning), `sendReversal` (void), `_pollForResult` (fallback polling), result handling, and defensive PAN masking. Registered in `registry.category('pos_payment_providers')` under the key `'aslan_omni'`. |
+| `static/src/overrides/models/pos_payment.js` | A `patch()` on the core `PosPayment` model that adds `uiState.aslanOmniRef` / `uiState.aslanOmniResult` — the runtime-only (never persisted) slots the payment interface uses to remember the idempotency ref and the terminal's result for a given line. See §10 for why this lives in `uiState` rather than as a plain property. |
+| `static/src/overrides/utils/generate_printer_data.js` | A `patch()` on `GeneratePrinterData.generatePaymentData` that copies `line.uiState.aslanOmniResult` into the plain-data payment dict the receipt template renders from. Without this, the receipt template below would never see the card details, because `uiState` is runtime-only and not part of the normal payment-to-receipt-data pipeline. |
+| `receipt/pos_order_receipt.xml` | A QWeb **inherit** of the core `point_of_sale.pos_order_receipt` template. Appends a "PAIEMENT PAR CARTE" block (scheme, masked card number, auth number, RRN) after the standard payments section, for any payment line that carries an `aslan_omni_result`. |
+| `static/src/backend/aslan_omni_pairing_widget/aslan_omni_pairing_widget.js` + `.xml` | Owl component + template mounted on the **backend** payment-method form (via the `aslan_omni_pairing` field widget declared in the views file above): enter the 8-char code, call `/cloud/pair`, store the returned key/device id on `pos.payment.method`, and re-pair / revoke. |
 
 ---
 
-## 10. The server API this add-on calls
+## 10. Where Odoo 20 bends this add-on's design (read if you're new to Odoo POS internals)
+
+If you have maintained a payment-terminal add-on for an older Odoo (16/17/18),
+several things here will look different on purpose. This section exists so you
+don't "fix" them back to the old pattern.
+
+- **Config lives on `pos.payment.method`, not `pos.config`.** In modern Odoo
+  POS, a payment method (and its terminal credentials) can be shared across
+  multiple tills, so all per-provider fields — including this add-on's three —
+  live on `pos.payment.method`. Every core terminal provider (Stripe, Adyen,
+  Viva Wallet) follows this same pattern; `pos_stripe` was used as the
+  reference while building this add-on.
+- **The payment interface takes a `line`, not an `order`.** `sendPaymentRequest`,
+  `sendPaymentCancel`, and `sendReversal` all receive the `pos.payment` line
+  directly. Everything about *this specific tender* — amount, order, UI state —
+  hangs off that line, so there is no need to dig an order apart to find "the"
+  payment being processed.
+- **`PaymentInterface` lives at `@point_of_sale/app/utils/payment/payment_interface`,
+  not `@point_of_sale/payment`.** The old import path was removed; using it
+  throws at asset-bundle compile time (the till refuses to open) rather than
+  failing quietly.
+- **Registration is a registry, not an `extend` call.** New providers register
+  with `registry.category('pos_payment_providers').add(key, Class)`. The `key`
+  (`'aslan_omni'`) must exactly match the value registered in
+  `_get_terminal_provider_selection()` in the model — a mismatch means the
+  payment method exists and looks configured, but the terminal never gets
+  called.
+- **Runtime-only state goes through `uiState`, not a raw property.** A payment
+  line in Odoo 20 is a reactive ORM-backed record; adding `line.aslanOmniRef = x`
+  directly would try to treat it as a model field. The sanctioned pattern —
+  used by `pos_stripe` and every other provider — is `patch()`-ing the
+  `PosPayment` model's `setup()` to seed a `uiState` bag for your scratch data,
+  which is exactly what `static/src/overrides/models/pos_payment.js` does.
+- **The receipt is a server-rendered QWeb template, not an Owl component.**
+  Odoo 20 generates `point_of_sale.pos_order_receipt` from Python/QWeb, fed by
+  `GeneratePrinterData`. A provider that wants extra lines on the receipt
+  inherits that template (`receipt/pos_order_receipt.xml`) **and** patches
+  `generatePaymentData()` so the extra data actually reaches the template —
+  both pieces are required; shipping only one silently does nothing.
+- **Three asset bundles, each scoped to what actually needs it:**
+  - `point_of_sale._assets_pos` — everything needed to run a POS session (all
+    of `app/**/*` and `overrides/**/*`).
+  - `point_of_sale.payment_terminals` — a slim bundle containing just the
+    payment interface + its `uiState` patch, loaded in contexts that need to
+    know about terminal providers without booting a full POS session.
+  - `web.assets_backend` — the pairing widget, because it is mounted on a
+    **backend** form view (Settings), not inside a POS session. Shipping it
+    under `_assets_pos` (as an earlier version of this add-on did) means it
+    loads in the wrong place and never actually renders.
+
+---
+
+## 11. The server API this add-on calls
 
 All endpoints live in `aslan-omni-api` (`src/routes/cloud.ts`), under the
 `/cloud` prefix. Auth is a **merchant** bearer token (the API key from pairing)
@@ -316,55 +403,79 @@ it never times out *before* the server has had its full window to answer.
 
 ---
 
-## 11. Security model
+## 12. Security model — including a known gap
 
 - **HTTPS is mandatory.** Enforced in three places: the model constraint on
   `aslan_omni_api_url`, the pairing widget, and the payment interface. A non-TLS
   URL is rejected before any credential is sent.
-- **The API key is a secret, scoped to managers.** `aslan_omni_api_key` carries
-  `groups='point_of_sale.group_pos_manager,base.group_system'`, so ordinary
-  cashiers cannot read the bearer token even though they use the terminal. It is
-  also rendered with `password="True"` in the form.
+- **The API key field is scoped to managers in the backend.** `aslan_omni_api_key`
+  carries `groups='point_of_sale.group_pos_manager,base.group_system'`, so an
+  ordinary cashier cannot open the payment-method **Settings form** and read the
+  bearer token there. It is also rendered with `password="True"`.
 - **Card numbers are never stored in full.** The terminal/cloud already mask the
   PAN, and the client masks again defensively (`_maskPan` keeps only the last 4
-  digits) before anything is stored on the payment line or printed. No full PAN
+  digits) before anything is stored in `line.uiState` or printed. No full PAN
   ever reaches Odoo's database or the receipt — consistent with SAQ-A scope.
 - **No card data flows through Odoo.** The card is read on the terminal; Odoo
   only ever sees the *result* (approved/declined + masked metadata).
 
+> ⚠️ **Known gap — the API key currently also reaches the POS browser session.**
+> `_load_pos_data_fields` in `models/pos_payment_method.py` pushes
+> `aslan_omni_api_key` into the POS client's data model, because
+> `payment_aslan_omni.js` currently calls `/cloud/pay` / `/cloud/reverse`
+> **directly from the browser**, using that key. The backend-form group
+> restriction above protects the Settings screen, but it does **not** stop
+> anyone with the POS tab's dev tools open from reading the merchant's bearer
+> token out of the loaded POS data and calling the cloud API as that merchant.
+> The correct fix — not yet implemented — is to add a server-side Odoo
+> controller/RPC method (e.g. `pos.payment.method.aslan_omni_pay(...)`) that
+> checks the caller has access to the current POS session, reads the key with
+> `sudo()` on the **server**, makes the outbound `/cloud/pay` request itself,
+> and returns only the result to the browser — then drop `aslan_omni_api_key`
+> from `_load_pos_data_fields` entirely. Treat this as a blocker before using
+> this add-on with real card traffic in an environment where the POS tab is
+> not fully trusted.
+
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 | Symptom | Likely cause | What to do |
 |---------|--------------|------------|
-| *"Terminal Aslan Omni non configuré"* when charging | The till has no stored API key / device id | Pair the terminal (section 5). |
+| *"Terminal Aslan Omni non configuré"* when charging | The payment method has no stored API key / device id | Pair the terminal (section 5). |
 | *"Terminal non connecté"* (503) | The terminal has no live cloud connection | Check the terminal is powered on and online; retry. |
 | *"Délai expiré"* (408) | Customer never presented a card within 95 s | Retry — nothing was charged. |
-| *"Aslan Omni API URL must use HTTPS"* | The configured URL is `http://` or malformed | Fix the **Aslan API URL** to an `https://` endpoint. |
+| *"Aslan Omni API URL must use HTTPS"* | The configured URL is `http://` or malformed | Fix the **Aslan Omni API URL** to an `https://` endpoint. |
 | Pairing fails with *"Pairing code not found or expired"* | The 8-char code expired (120 s) or was mistyped | Generate a fresh code on the terminal and re-enter promptly. |
 | *"Impossible d'annuler : STAN absent"* on reverse | The payment line has no stored STAN | Only approved Aslan Omni payments carry a STAN; you cannot reverse a line that was never approved through this flow. |
 | Network dropped mid-payment, cashier unsure if it charged | Covered by the recovery loop (§8.2) | Re-click **Charge** on the *same* line — the stable ref prevents a double charge; the server returns the real result. |
+| Asset bundle fails to compile / till won't open | A JS import path or registry key was changed and no longer matches core Odoo 20 | Re-check against [§10](#10-where-odoo-20-bends-this-add-ons-design-read-if-youre-new-to-odoo-pos-internals); confirm with `odoo -i point_of_sale,aslan_omni_payment --stop-after-init` that the module still installs cleanly. |
 
 For deeper debugging, open the browser console: all failures surface through
 `_showError`, and the network tab shows the exact `/cloud/*` request/response.
 
 ---
 
-## 13. Known limitations
+## 14. Known limitations
 
+- **The API key reaches the browser** — see the [Security model](#12-security-model--including-a-known-gap)
+  gap above. This is the most important limitation to fix before production
+  use with untrusted POS devices.
 - **No true remote cancel.** Cancelling in Odoo is a UI reset only; the terminal
   must be cancelled on the terminal. A real abort needs a new terminal-protocol
   message in `aslan-omni-api` (an SSE "AbortCommand" + a `/cloud/pay/:id/cancel`
   endpoint). Until that exists, rely on the stable-ref safety net (§8.3).
-- **Odoo 20.** Tested against Odoo 20. The asset bundle key (`point_of_sale._assets_pos`), import paths (`@point_of_sale/payment`, `@web/core/*`), `dialog` service, `payment_ids` accessor, and inline `invisible=` domain syntax are all 17+/20-specific. A downport to 15/16 would need the corresponding reversions.
+- **Odoo 20.0 only.** This add-on targets the 20.0 POS JavaScript architecture
+  specifically (see §10). Installing it as-is on 16/17/18/19 will fail at
+  asset-bundle compile time or at module install time. A downport would need to
+  reverse most of §10's choices for the target version.
 - **No automated tests.** The payment state machine (pay / recover / reverse) is
-  exactly the kind of logic that benefits from QUnit tests; none ship today.
-  Until they do, test changes manually against a terminal or an emulator.
+  exactly the kind of logic that benefits from QUnit/Hoot tests; none ship
+  today. Until they do, test changes manually against a terminal or an emulator.
 
 ---
 
-## 14. Glossary
+## 15. Glossary
 
 | Term | Meaning |
 |------|---------|
@@ -375,7 +486,9 @@ For deeper debugging, open the browser console: all failures surface through
 | **SSE** | Server-Sent Events — the one-way live push the cloud uses to reach the terminal. |
 | **Long-poll** | An HTTP request the server deliberately holds open (here up to 95 s) until it has an answer. |
 | **COF / NapsPay** | The terminal's card-acquiring stack; this add-on only sees its results, never its internals. |
-| **`pos.config`** | The Odoo model for one Point of Sale (one till); this is where the Omni credentials live. |
+| **`pos.payment.method`** | The Odoo model for one payment method (e.g. "Aslan Omni", "Cash"); this is where the Omni credentials live in Odoo 20, shared across any till that offers this method. |
+| **`uiState`** | A runtime-only (never persisted, never synced) scratch object on a `pos.payment` line, used for data — like our pending ref and terminal result — that must not become a database field. |
+| **Asset bundle** | A named group of JS/CSS/QWeb files Odoo compiles together for one context (a POS session, the backend UI, …). A broken import anywhere in a bundle fails the whole bundle's compile. |
 
 ---
 
