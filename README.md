@@ -271,18 +271,16 @@ This add-on builds the ref in **one** place, `_payRef()`, in
 `static/src/app/payment_aslan_omni.js`:
 
 ```js
-async _payRef(line) {
-    const source = `${line.pos_order_id.uuid}-${line.uuid}`;
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
-    const hex = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
-    return `ODOO-${hex.slice(0, 28)}`;   // deterministic hash of order uuid + line uuid
+_payRef(line) {
+    return `ODOO-${line.uuid.replace(/-/g, '')}`;   // 'ODOO-' + 32 hex chars = 37
 }
 ```
 
-`line.uuid` is Odoo's stable client id for that payment line — it does not
-change between retries, and hashing is deterministic (same two UUIDs in →
-same ref out every time), so one physical payment line always maps to exactly
-one ref across retries.
+`line.uuid` is Odoo's stable, globally-unique client id (uuidv4) for that
+payment line — it does not change between retries, so one physical payment
+line always maps to exactly one ref. A reversal's own ref is derived the same
+way but independently (`REV-${line.uuid...}`, not `REV-` + the pay ref) —
+see the note on `sendReversal` below for why.
 
 > ⚠️ **The original bug this replaced:** the ref used to be
 > `ODOO-${order.uid}-${Date.now()}`. Because `Date.now()` changes on every
@@ -291,16 +289,16 @@ one ref across retries.
 > a **second** card and charge twice. Never reintroduce a changing value here.
 
 > ⚠️ **A second bug found during live staging testing:** `_payRef` briefly
-> concatenated the two raw UUIDs (`ODOO-<36 chars>-<36 chars>` ≈ 78 chars).
-> `aslan-omni-api`'s schema caps `ref`/`originalRef` at **40 characters**
-> (`z.string().max(40)`), and a reversal's ref adds a `REV-` prefix on top of
-> that — so every real payment attempt was silently rejected with a `400`
-> once it actually reached the server, a failure the earlier Docker-based
-> verification never caught because it only checked that the module
-> installed and the asset bundles compiled, not that a real payment payload
-> satisfied the server's own validation. Hashing the two UUIDs down to a
-> fixed 28-hex-char digest keeps the ref under the cap (33 chars; 37 with the
-> `REV-` prefix) while staying deterministic.
+> joined both the order's uuid *and* the line's uuid (`ODOO-<36 chars>-<36
+> chars>` ≈ 78 chars). `aslan-omni-api`'s schema caps `ref`/`originalRef` at
+> **40 characters** (`z.string().max(40)`), so every real payment attempt was
+> silently rejected with a `400` once it actually reached the server — a
+> failure the earlier Docker-based verification never caught, since it only
+> checked that the module installed and the asset bundles compiled, not that
+> a real payment payload satisfied the server's own validation. Since
+> `line.uuid` alone is already globally unique, there's no need to fold in
+> the order's uuid too — stripping its dashes keeps the ref under the cap
+> (37 chars) with no hashing needed.
 
 ### 8.2 On any failure before a known result, RE-POST the same ref — do not give up
 

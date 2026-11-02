@@ -21,17 +21,14 @@ export class PaymentAslanOmni extends PaymentInterface {
      * reopen a double-charge window. `line.uuid` is Odoo's stable, per-line
      * client id, so one physical payment line always maps to one ref.
      *
-     * The server caps `ref`/`originalRef` at 40 chars (z.string().max(40)), but
-     * two Odoo UUIDv4s joined together is ~78 chars. Hashing keeps the ref
-     * deterministic (same line → same ref, so dedup/retry still works) while
-     * fitting the budget: 'ODOO-' + 28 hex chars (112-bit SHA-256 prefix) = 33
-     * chars, leaving room for the 'REV-' prefix a reversal ref adds on top.
+     * The server caps `ref`/`originalRef` at 40 chars (z.string().max(40)).
+     * `line.uuid` alone (Odoo's uuidv4 for this payment line) is already
+     * globally unique, so there is no need to also fold in the order's uuid —
+     * stripping the dashes keeps it stable and deterministic while fitting
+     * comfortably under the cap: 'ODOO-' + 32 hex chars = 37 chars.
      */
-    async _payRef(line) {
-        const source = `${line.pos_order_id.uuid}-${line.uuid}`;
-        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
-        const hex = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
-        return `ODOO-${hex.slice(0, 28)}`;
+    _payRef(line) {
+        return `ODOO-${line.uuid.replace(/-/g, '')}`;
     }
 
     /**
@@ -60,7 +57,7 @@ export class PaymentAslanOmni extends PaymentInterface {
         }
 
         const amountCents = Math.round(line.amount * 100);
-        const ref = await this._payRef(line);
+        const ref = this._payRef(line);
         line.uiState.aslanOmniRef = ref;
 
         line.setPaymentStatus('waitingCard');
@@ -73,7 +70,7 @@ export class PaymentAslanOmni extends PaymentInterface {
             tillId: String(this.pos.config.id),
             // Odoo's falsy-Char convention is `false`, not '' or undefined — the
             // server schema requires description to be a string or omitted.
-            description: line.pos_order_id.name || undefined,
+            description: line.pos_order_id.name || line.pos_order_id.pos_reference || undefined,
         });
 
         // Attempt the long-poll; on a network failure, re-POST the same ref so
@@ -105,7 +102,7 @@ export class PaymentAslanOmni extends PaymentInterface {
                 }
 
                 if (!resp.ok) {
-                    this._showError(`Erreur serveur: ${data.error || resp.status}`);
+                    this._showError(`Erreur serveur: ${data.errorDescription || data.error || resp.status}`);
                     line.setPaymentStatus('retry');
                     return false;
                 }
@@ -198,11 +195,15 @@ export class PaymentAslanOmni extends PaymentInterface {
         // originalRef must match the ref used in the original /cloud/pay call so
         // the server can tie the reversal to it. Fall back to the stable scheme
         // (same as _payRef) when the stored ref is somehow missing.
-        const originalRef = line.uiState.aslanOmniRef || await this._payRef(line);
-        // The reversal's OWN ref is also stable (no Date.now()): the server keys
-        // /cloud/reverse dedup on ref too, so retrying a dropped reversal must
-        // reuse the same ref to avoid issuing a second void.
-        const reverseRef  = `REV-${originalRef}`;
+        const originalRef = line.uiState.aslanOmniRef || this._payRef(line);
+        // The reversal's OWN ref is also stable (no Date.now()) and distinct from
+        // originalRef (different prefix, so it can never collide with it in the
+        // server's unique `ref` column), derived straight from line.uuid rather
+        // than wrapping originalRef — 'REV-' + ODOO-'s payload would exceed the
+        // 40-char cap. The server only requires ref to be unique and originalRef
+        // to resolve to the prior command; it does not require ref === 'REV-' +
+        // originalRef.
+        const reverseRef = `REV-${line.uuid.replace(/-/g, '')}`;
 
         line.setPaymentStatus('waitingCard');
 
@@ -230,7 +231,7 @@ export class PaymentAslanOmni extends PaymentInterface {
             const data = await resp.json();
 
             if (!resp.ok) {
-                this._showError(`Erreur annulation: ${data.error || resp.status}`);
+                this._showError(`Erreur annulation: ${data.errorDescription || data.error || resp.status}`);
                 line.setPaymentStatus('retry');
                 return false;
             }
