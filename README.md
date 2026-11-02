@@ -320,7 +320,7 @@ yet — see [Known limitations](#14-known-limitations).)
 
 | File | What it does |
 |------|--------------|
-| `__manifest__.py` | Odoo module descriptor. Declares the dependency on `point_of_sale`, loads the views and receipt template, and splits front-end assets across **three** bundles — see [§10](#10-where-odoo-20-bends-this-add-ons-design-read-if-youre-new-to-odoo-pos-internals) for why there are three, not one. Version `20.0.1.0.0`, LGPL-3. |
+| `__manifest__.py` | Odoo module descriptor. Declares the dependency on `point_of_sale`, loads the views and receipt template, and splits front-end assets across **three** bundles — see [§10](#10-where-odoo-20-bends-this-add-ons-design-read-if-youre-new-to-odoo-pos-internals) for why there are three, not one. Version `1.0.0` (deliberately **not** prefixed with an Odoo series — see the note under §10), LGPL-3. |
 | `models/pos_payment_method.py` | Extends `pos.payment.method` (not `pos.config` — see §10). Adds `aslan_omni_device_id`, `aslan_omni_api_key` (group-restricted — see §12), `aslan_omni_api_url` (HTTPS-only via `@api.constrains`), registers `'aslan_omni'` in `_get_terminal_provider_selection()`, and pushes all four fields to the POS client via `_load_pos_data_fields`. `aslan_omni_pair_widget` is a non-stored dummy field that exists only as a mount point for the Owl pairing widget. |
 | `views/pos_payment_method_views.xml` | Adds the **Aslan Omni** notebook page to the standard `pos.payment.method` form (`point_of_sale.pos_payment_method_view_form`): API URL field, read-only Device ID and API Key, and the pairing widget. The page is shown only when `payment_provider == 'aslan_omni'`. |
 | `static/src/app/payment_aslan_omni.js` | **The core.** Subclass of `PaymentInterface`. Implements `sendPaymentRequest` (pay + recovery loop), `sendPaymentCancel` (UI-only reset + warning), `sendReversal` (void), `_pollForResult` (fallback polling), result handling, and defensive PAN masking. Registered in `registry.category('pos_payment_providers')` under the key `'aslan_omni'`. |
@@ -370,6 +370,29 @@ don't "fix" them back to the old pattern.
   inherits that template (`receipt/pos_order_receipt.xml`) **and** patches
   `generatePaymentData()` so the extra data actually reaches the template —
   both pieces are required; shipping only one silently does nothing.
+- **The manifest version must NOT be hardcoded to a specific Odoo series.**
+  Odoo's `check_version()` rejects a module whose version starts with a series
+  prefix that doesn't match the *exact* running series (`20.0`, `20.1`, …) —
+  and that series changes between Odoo pre-releases (we hit this first-hand:
+  the module installed fine on `odoo:20` which reports itself as series
+  `20.0`, but failed with `installable=False` on a `20.1a1` build). The fix,
+  matching what core's own `point_of_sale/__manifest__.py` does, is a bare
+  version with **no series prefix** (e.g. `'1.0.0'`): Odoo's `adapt_version()`
+  then auto-prefixes it with whichever series is actually running, so the
+  module stays installable across `20.0`, `20.1`, and future `20.x` builds
+  without edits.
+- **OWL's reactivity/ref primitives changed from `useState`/`useRef` to
+  `proxy()`/`signal.ref()`.** This is easy to miss because `@odoo/owl` is
+  imported the same way either way — the failure is a silent `undefined`
+  import that only breaks at runtime when the component tries to use it, not
+  at bundle-compile time. `static/src/backend/aslan_omni_pairing_widget/aslan_omni_pairing_widget.js`
+  uses `proxy({...})` for reactive state and `signal.ref()` for DOM refs
+  (bound as a class field, referenced in XML as `t-ref="this.codeInput"`,
+  never a bare string key). The matching XML template also uses `t-out`
+  instead of the removed `t-esc`, and every binding (`t-on-click`, `t-ref`,
+  `t-out`) is `this.`-prefixed, mirroring core's own
+  `pos_payment_provider_cards` component — use that file as the reference if
+  you're adding another Owl component here.
 - **Three asset bundles, each scoped to what actually needs it:**
   - `point_of_sale._assets_pos` — everything needed to run a POS session (all
     of `app/**/*` and `overrides/**/*`).

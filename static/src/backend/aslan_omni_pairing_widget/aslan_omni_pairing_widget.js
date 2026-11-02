@@ -1,21 +1,22 @@
 /** @odoo-module **/
 
-import { Component, useState, useRef } from '@odoo/owl';
+import { Component, proxy, signal } from '@odoo/owl';
 import { registry } from '@web/core/registry';
 import { useService } from '@web/core/utils/hooks';
 
 export class AslanOmniPairingWidget extends Component {
+    codeInput = signal.ref();
+
     setup() {
         this.orm = useService('orm');
         // Pre-populate deviceId from the record so the "paired" state shows on load.
         const existingDeviceId = this.props.record.data?.aslan_omni_device_id || '';
-        this.state = useState({
+        this.state = proxy({
             step: existingDeviceId ? 'done' : 'idle',
             code: '',
             deviceId: existingDeviceId,
             errorMsg: '',
         });
-        this.codeInput = useRef('codeInput');
     }
 
     onCodeInput(ev) {

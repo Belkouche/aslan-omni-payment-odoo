@@ -1,50 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <templates id="template" xml:space="preserve">
-    <t t-name="aslan_omni.PairingWidget" owl="1">
+    <t t-name="aslan_omni.PairingWidget">
         <div class="aslan-omni-pairing mt8">
-            <t t-if="state.step === 'idle'">
+            <t t-if="this.state.step === 'idle'">
                 <p>Entrez le code affiché sur l'écran du terminal Aslan Omni :</p>
                 <p class="text-muted"><small>Appuyez d'abord sur "Associer avec Odoo" sur le terminal.</small></p>
                 <div class="d-flex align-items-center gap-2 mt8">
                     <input
-                        t-ref="codeInput"
+                        t-ref="this.codeInput"
                         type="text"
                         class="o_input"
                         style="font-family:monospace;font-size:1.4rem;letter-spacing:0.3rem;width:180px;text-transform:uppercase"
                         placeholder="XXXXXXXX"
                         maxlength="8"
-                        t-on-input="onCodeInput"
+                        t-on-input="this.onCodeInput"
                     />
-                    <button class="btn btn-primary" t-on-click="onSubmitCode"
-                            t-att-disabled="state.code.length !== 8">
+                    <button class="btn btn-primary" t-on-click="this.onSubmitCode"
+                            t-att-disabled="this.state.code.length !== 8">
                         Associer
                     </button>
                 </div>
             </t>
-            <t t-if="state.step === 'loading'">
+            <t t-if="this.state.step === 'loading'">
                 <span class="fa fa-spin fa-spinner mr4"/> Association en cours...
             </t>
-            <t t-if="state.step === 'done'">
+            <t t-if="this.state.step === 'done'">
                 <div class="alert alert-success mt8 mb4">
                     <span class="fa fa-check-circle mr4"/> Terminal associé
-                    <br/><small class="text-muted">Device ID : <t t-esc="state.deviceId"/></small>
+                    <br/><small class="text-muted">Device ID : <t t-out="this.state.deviceId"/></small>
                 </div>
                 <div class="d-flex gap-2 mt4">
-                    <button class="btn btn-secondary btn-sm" t-on-click="reset">
+                    <button class="btn btn-secondary btn-sm" t-on-click="this.reset">
                         <span class="fa fa-refresh mr4"/>Réassocier
                     </button>
-                    <button class="btn btn-danger btn-sm" t-on-click="onRevoke">
+                    <button class="btn btn-danger btn-sm" t-on-click="this.onRevoke">
                         <span class="fa fa-unlink mr4"/>Dissocier
                     </button>
                 </div>
             </t>
-            <t t-if="state.step === 'revoking'">
+            <t t-if="this.state.step === 'revoking'">
                 <span class="fa fa-spin fa-spinner mr4"/> Dissociation en cours...
             </t>
-            <t t-if="state.step === 'error'">
+            <t t-if="this.state.step === 'error'">
                 <div class="alert alert-danger mt8">
-                    <t t-esc="state.errorMsg"/>
-                    <br/><a t-on-click="reset" href="#">Réessayer</a>
+                    <t t-out="this.state.errorMsg"/>
+                    <br/><a t-on-click="this.reset" href="#">Réessayer</a>
                 </div>
             </t>
         </div>
