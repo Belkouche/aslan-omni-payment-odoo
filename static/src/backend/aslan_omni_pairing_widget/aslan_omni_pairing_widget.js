@@ -1,10 +1,14 @@
 /** @odoo-module **/
 
-import { Component, proxy, signal } from '@odoo/owl';
+import { Component, proxy, signal, useProps } from '@odoo/owl';
 import { registry } from '@web/core/registry';
 import { useService } from '@web/core/utils/hooks';
+import { standardFieldProps } from '@web/views/fields/standard_field_props';
 
 export class AslanOmniPairingWidget extends Component {
+    static template = 'aslan_omni.PairingWidget';
+
+    props = useProps(standardFieldProps);
     codeInput = signal.ref();
 
     setup() {
@@ -102,13 +106,6 @@ export class AslanOmniPairingWidget extends Component {
         }
     }
 }
-
-AslanOmniPairingWidget.template = 'aslan_omni.PairingWidget';
-AslanOmniPairingWidget.props = {
-    record: { type: Object },
-    readonly: { type: Boolean, optional: true },
-    id: { type: String, optional: true },
-};
 
 registry.category('fields').add('aslan_omni_pairing', {
     component: AslanOmniPairingWidget,

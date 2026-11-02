@@ -393,6 +393,20 @@ don't "fix" them back to the old pattern.
   `t-out`) is `this.`-prefixed, mirroring core's own
   `pos_payment_provider_cards` component — use that file as the reference if
   you're adding another Owl component here.
+- **A `static props`/`static defaultProps` class field is silently
+  ignored.** OWL 3 only reads the props schema from an *instance* field set
+  via `useProps(...)`, built from a typed schema (`t.string()`,
+  `t.object()`, …). Declaring `static props = {...}` the old way doesn't
+  error at bundle-compile time — it throws only when the component is
+  actually instantiated, with
+  `UncaughtPromiseError: Component "X" defines a static "props" ... which
+  Owl 3 ignores`. `aslan_omni_pairing_widget.js` is a field widget (mounted
+  via `<field widget="aslan_omni_pairing">`), so its props come from
+  `standardFieldProps` (`@web/views/fields/standard_field_props`):
+  `props = useProps(standardFieldProps)`. A view widget (mounted via
+  `t-component`/`<widget>` outside a field) would use `standardWidgetProps`
+  from `@web/views/widgets/standard_widget_props` instead — pick the one
+  that matches how your component is mounted.
 - **Three asset bundles, each scoped to what actually needs it:**
   - `point_of_sale._assets_pos` — everything needed to run a POS session (all
     of `app/**/*` and `overrides/**/*`).
