@@ -20,9 +20,18 @@ export class PaymentAslanOmni extends PaymentInterface {
      * attempt (e.g. with Date.now()) would make every retry a NEW command and
      * reopen a double-charge window. `line.uuid` is Odoo's stable, per-line
      * client id, so one physical payment line always maps to one ref.
+     *
+     * The server caps `ref`/`originalRef` at 40 chars (z.string().max(40)), but
+     * two Odoo UUIDv4s joined together is ~78 chars. Hashing keeps the ref
+     * deterministic (same line → same ref, so dedup/retry still works) while
+     * fitting the budget: 'ODOO-' + 28 hex chars (112-bit SHA-256 prefix) = 33
+     * chars, leaving room for the 'REV-' prefix a reversal ref adds on top.
      */
-    _payRef(line) {
-        return `ODOO-${line.pos_order_id.uuid}-${line.uuid}`;
+    async _payRef(line) {
+        const source = `${line.pos_order_id.uuid}-${line.uuid}`;
+        const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+        const hex = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+        return `ODOO-${hex.slice(0, 28)}`;
     }
 
     /**
@@ -51,7 +60,7 @@ export class PaymentAslanOmni extends PaymentInterface {
         }
 
         const amountCents = Math.round(line.amount * 100);
-        const ref = this._payRef(line);
+        const ref = await this._payRef(line);
         line.uiState.aslanOmniRef = ref;
 
         line.setPaymentStatus('waitingCard');
@@ -62,7 +71,9 @@ export class PaymentAslanOmni extends PaymentInterface {
             amountCents,
             cashierId: String(cashier?.id || ''),
             tillId: String(this.pos.config.id),
-            description: line.pos_order_id.name,
+            // Odoo's falsy-Char convention is `false`, not '' or undefined — the
+            // server schema requires description to be a string or omitted.
+            description: line.pos_order_id.name || undefined,
         });
 
         // Attempt the long-poll; on a network failure, re-POST the same ref so
@@ -187,7 +198,7 @@ export class PaymentAslanOmni extends PaymentInterface {
         // originalRef must match the ref used in the original /cloud/pay call so
         // the server can tie the reversal to it. Fall back to the stable scheme
         // (same as _payRef) when the stored ref is somehow missing.
-        const originalRef = line.uiState.aslanOmniRef || this._payRef(line);
+        const originalRef = line.uiState.aslanOmniRef || await this._payRef(line);
         // The reversal's OWN ref is also stable (no Date.now()): the server keys
         // /cloud/reverse dedup on ref too, so retrying a dropped reversal must
         // reuse the same ref to avoid issuing a second void.

@@ -271,20 +271,36 @@ This add-on builds the ref in **one** place, `_payRef()`, in
 `static/src/app/payment_aslan_omni.js`:
 
 ```js
-_payRef(line) {
-    return `ODOO-${line.pos_order_id.uuid}-${line.uuid}`;   // order uuid + stable per-line uuid
+async _payRef(line) {
+    const source = `${line.pos_order_id.uuid}-${line.uuid}`;
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
+    const hex = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+    return `ODOO-${hex.slice(0, 28)}`;   // deterministic hash of order uuid + line uuid
 }
 ```
 
 `line.uuid` is Odoo's stable client id for that payment line — it does not
-change between retries. So one physical payment line always maps to exactly one
-ref.
+change between retries, and hashing is deterministic (same two UUIDs in →
+same ref out every time), so one physical payment line always maps to exactly
+one ref across retries.
 
 > ⚠️ **The original bug this replaced:** the ref used to be
 > `ODOO-${order.uid}-${Date.now()}`. Because `Date.now()` changes on every
 > attempt, every retry produced a *new* ref → a *new* server command → the
 > server's dedup could not link them → a retry after a lost response could read
 > a **second** card and charge twice. Never reintroduce a changing value here.
+
+> ⚠️ **A second bug found during live staging testing:** `_payRef` briefly
+> concatenated the two raw UUIDs (`ODOO-<36 chars>-<36 chars>` ≈ 78 chars).
+> `aslan-omni-api`'s schema caps `ref`/`originalRef` at **40 characters**
+> (`z.string().max(40)`), and a reversal's ref adds a `REV-` prefix on top of
+> that — so every real payment attempt was silently rejected with a `400`
+> once it actually reached the server, a failure the earlier Docker-based
+> verification never caught because it only checked that the module
+> installed and the asset bundles compiled, not that a real payment payload
+> satisfied the server's own validation. Hashing the two UUIDs down to a
+> fixed 28-hex-char digest keeps the ref under the cap (33 chars; 37 with the
+> `REV-` prefix) while staying deterministic.
 
 ### 8.2 On any failure before a known result, RE-POST the same ref — do not give up
 
