@@ -1,6 +1,6 @@
 {
     'name': 'Aslan Omni Payment',
-    'version': '1.0.3',
+    'version': '1.1.0',
     'category': 'Sales/Point of Sale',
     'summary': 'Aslan Omni card terminal integration for Odoo POS',
     'author': 'Aslan',

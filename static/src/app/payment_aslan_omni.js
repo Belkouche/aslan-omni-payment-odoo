@@ -4,7 +4,7 @@ import { PaymentInterface } from '@point_of_sale/app/utils/payment/payment_inter
 import { registry } from '@web/core/registry';
 import { AlertDialog } from '@web/core/confirmation_dialog/confirmation_dialog';
 
-const PAYMENT_TIMEOUT_MS = 97000;  // 2s buffer over server's 95s long-poll
+const PAYMENT_TIMEOUT_MS = 97000;  // 2s buffer over the API's 95s command TTL
 const POLL_INTERVAL_MS   = 3000;
 const MAX_RECOVERY_ATTEMPTS = 2;   // re-POSTs after the first, before giving up
 
@@ -33,95 +33,42 @@ export class PaymentAslanOmni extends PaymentInterface {
 
     /**
      * Called when cashier clicks "Charge" for Aslan Omni.
-     * POSTs to /cloud/pay (long-poll, holds up to 95s). On ANY failure before a
-     * result is known, it re-POSTs with the SAME ref — the server returns the
-     * completed result, a 409 + commandId (then we poll), or safely re-relays.
-     * This recovery covers a drop during the initial long-poll too, where the
-     * older "poll only if we already have a commandId" approach gave up blindly.
+     * The Odoo server relays the payment to the Omni API (the merchant key never
+     * reaches the POS) and returns the commandId at once; we then poll its status.
+     * On a network failure before the command is known, the same ref is sent
+     * again — the API returns the completed result, a 409 + commandId (then we
+     * poll), or safely re-relays, so a retry never starts a second card read.
      */
     async sendPaymentRequest(line) {
         await super.sendPaymentRequest(...arguments);
 
-        const paymentMethod = line.payment_method_id;
-        const apiUrl   = paymentMethod.aslan_omni_api_url || 'https://api.aslanpay.ma';
-        const apiKey   = paymentMethod.aslan_omni_api_key;
-        const deviceId = paymentMethod.aslan_omni_device_id;
-
-        if (!apiKey || !deviceId) {
+        if (!line.payment_method_id.aslan_omni_device_id) {
             this._showError('Terminal Aslan Omni non configuré. Associez un terminal dans les paramètres.');
             return false;
         }
-        if (!apiUrl.startsWith('https://')) {
-            this._showError('Aslan Omni API URL must use HTTPS. Check the payment method configuration.');
-            return false;
-        }
 
-        const amountCents = Math.round(line.amount * 100);
         const ref = this._payRef(line);
         line.uiState.aslanOmniRef = ref;
 
         line.setPaymentStatus('waitingCard');
 
         const cashier = this.pos.accessRight.cashier;
-        const payload = JSON.stringify({
+        const args = [
             ref,
-            amountCents,
-            cashierId: String(cashier?.id || ''),
-            tillId: String(this.pos.config.id),
-            // Odoo's falsy-Char convention is `false`, not '' or undefined — the
-            // server schema requires description to be a string or omitted.
-            description: line.pos_order_id.name || line.pos_order_id.pos_reference || undefined,
-        });
+            Math.round(line.amount * 100),
+            String(cashier?.id || ''),
+            String(this.pos.config.id),
+            line.pos_order_id.name || line.pos_order_id.pos_reference || false,
+        ];
 
-        // Attempt the long-poll; on a network failure, re-POST the same ref so
-        // the server re-attaches us to the in-flight/completed command rather
-        // than starting a new one. Bounded so a persistent outage still ends.
+        // Bounded so a persistent outage still ends.
         for (let attempt = 0; attempt <= MAX_RECOVERY_ATTEMPTS; attempt++) {
-            try {
-                const resp = await this._fetchWithTimeout(`${apiUrl}/cloud/pay`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${apiKey}`,
-                    },
-                    body: payload,
-                }, PAYMENT_TIMEOUT_MS);
-
-                if (resp.status === 503) {
-                    this._showError('Terminal non connecté. Vérifiez que le terminal Aslan Omni est allumé.');
-                    line.setPaymentStatus('retry');
-                    return false;
-                }
-
-                const data = await resp.json();
-
-                // 409 = this ref is already executing on the terminal. Attach to
-                // it by polling its status; never start a parallel card read.
-                if (resp.status === 409 && data.commandId) {
-                    return await this._pollForResult(apiUrl, apiKey, data.commandId, line);
-                }
-
-                if (!resp.ok) {
-                    this._showError(`Erreur serveur: ${data.errorDescription || data.error || resp.status}`);
-                    line.setPaymentStatus('retry');
-                    return false;
-                }
-
-                // 200 — the long-poll returned the terminal's final result.
-                return this._handleResult(data, line);
-
-            } catch (_err) {
-                // Network dropped. We may or may not have a commandId — it does
-                // not matter: re-POSTing the SAME ref is the recovery path the
-                // server is built for. Keep the UI in waitingCard and retry.
-                if (attempt < MAX_RECOVERY_ATTEMPTS) {
-                    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-                    continue;
-                }
-                this._showError('Erreur réseau. Vérifiez la connexion internet, puis relancez le paiement (la carte ne sera pas débitée deux fois).');
-                line.setPaymentStatus('retry');
-                return false;
+            const res = await this._callOmni('aslan_omni_send_payment', args);
+            if (res.error === 'network' && attempt < MAX_RECOVERY_ATTEMPTS) {
+                await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+                continue;
             }
+            return this._handleCommandResponse(res, line, data => this._handleResult(data, line));
         }
         return false;
     }
@@ -145,26 +92,63 @@ export class PaymentAslanOmni extends PaymentInterface {
         return true;
     }
 
-    async _pollForResult(apiUrl, apiKey, commandId, line) {
+    /**
+     * Turns the server's answer to a pay/reverse request into a line status.
+     * `onResult` handles a final result, given directly or reached by polling.
+     */
+    async _handleCommandResponse(res, line, onResult) {
+        if (res.error === 'not_configured') {
+            this._showError('Terminal Aslan Omni non configuré. Associez un terminal dans les paramètres.');
+            line.setPaymentStatus('retry');
+            return false;
+        }
+        if (res.error) {
+            this._showError('Erreur réseau. Vérifiez la connexion internet, puis relancez le paiement (la carte ne sera pas débitée deux fois).');
+            line.setPaymentStatus('retry');
+            return false;
+        }
+        const { httpStatus, body } = res;
+        if (httpStatus === 503) {
+            this._showError('Terminal non connecté. Vérifiez que le terminal Aslan Omni est allumé.');
+            line.setPaymentStatus('retry');
+            return false;
+        }
+        // 202 = relayed; 409 = this ref is already executing on the terminal.
+        // Either way, follow the command; never start a parallel card read.
+        if ((httpStatus === 202 || httpStatus === 409) && body.commandId) {
+            return await this._pollForResult(body.commandId, line, onResult);
+        }
+        if (httpStatus === 408) {
+            this._showError("Délai expiré. La carte n'a pas été lue à temps.");
+            line.setPaymentStatus('retry');
+            return false;
+        }
+        if (httpStatus < 200 || httpStatus >= 300) {
+            this._showError(`Erreur serveur: ${body.errorDescription || body.error || httpStatus}`);
+            line.setPaymentStatus('retry');
+            return false;
+        }
+        // 200 — the ref already had a final result.
+        return onResult(body);
+    }
+
+    async _pollForResult(commandId, line, onResult) {
+        // Outlasts the API's 95s command TTL, so the last poll sees the timeout.
         const deadline = Date.now() + PAYMENT_TIMEOUT_MS;
         while (Date.now() < deadline) {
             await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-            try {
-                const resp = await fetch(`${apiUrl}/cloud/pay/${commandId}/status`, {
-                    headers: { 'Authorization': `Bearer ${apiKey}` },
-                });
-                if (!resp.ok) continue;
-                const data = await resp.json();
-                if (data.status === 'completed') {
-                    return this._handleResult({ ...data, status: data.resultStatus }, line);
-                }
-                if (data.status === 'timeout') {
-                    this._showError("Délai expiré. La carte n'a pas été lue à temps.");
-                    line.setPaymentStatus('retry');
-                    return false;
-                }
-                // status === 'pending' — keep polling
-            } catch (_) { /* network hiccup — keep polling */ }
+            const res = await this._callOmni('aslan_omni_command_status', [commandId]);
+            if (res.error || res.httpStatus !== 200) continue;  // hiccup — keep polling
+            const data = res.body;
+            if (data.status === 'completed') {
+                return onResult({ ...data, status: data.resultStatus });
+            }
+            if (data.status === 'timeout') {
+                this._showError("Délai expiré. La carte n'a pas été lue à temps.");
+                line.setPaymentStatus('retry');
+                return false;
+            }
+            // status === 'pending' — keep polling
         }
         this._showError('Délai expiré.');
         line.setPaymentStatus('retry');
@@ -173,7 +157,7 @@ export class PaymentAslanOmni extends PaymentInterface {
 
     /**
      * Called by Odoo POS when the cashier clicks "Reverse" on a paid order.
-     * Uses POST /cloud/reverse (merchant auth, same long-poll pattern as /cloud/pay).
+     * Relayed through the Odoo server to POST /cloud/reverse, then polled like a payment.
      */
     async sendReversal(line) {
         const result = line.uiState.aslanOmniResult;
@@ -182,12 +166,7 @@ export class PaymentAslanOmni extends PaymentInterface {
             return false;
         }
 
-        const paymentMethod = line.payment_method_id;
-        const apiUrl   = paymentMethod.aslan_omni_api_url || 'https://api.aslanpay.ma';
-        const apiKey   = paymentMethod.aslan_omni_api_key;
-        const deviceId = paymentMethod.aslan_omni_device_id;
-
-        if (!apiKey || !deviceId) {
+        if (!line.payment_method_id.aslan_omni_device_id) {
             this._showError('Terminal Aslan Omni non configuré.');
             return false;
         }
@@ -207,49 +186,16 @@ export class PaymentAslanOmni extends PaymentInterface {
 
         line.setPaymentStatus('waitingCard');
 
-        try {
-            const resp = await this._fetchWithTimeout(`${apiUrl}/cloud/reverse`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${apiKey}`,
-                    'X-Device-Id': deviceId,
-                },
-                body: JSON.stringify({
-                    ref: reverseRef,
-                    originalRef,
-                    stan: result.stan,
-                }),
-            }, PAYMENT_TIMEOUT_MS);
-
-            if (resp.status === 503) {
-                this._showError('Terminal non connecté.');
-                line.setPaymentStatus('retry');
-                return false;
-            }
-
-            const data = await resp.json();
-
-            if (!resp.ok) {
-                this._showError(`Erreur annulation: ${data.errorDescription || data.error || resp.status}`);
-                line.setPaymentStatus('retry');
-                return false;
-            }
-
+        const res = await this._callOmni('aslan_omni_send_reversal', [reverseRef, originalRef, result.stan]);
+        return this._handleCommandResponse(res, line, data => {
             if (data.status === 'reversed') {
                 line.setPaymentStatus('done');
                 return true;
             }
-
             this._showError(`Annulation refusée (statut: ${data.status}).`);
             line.setPaymentStatus('retry');
             return false;
-
-        } catch (_err) {
-            this._showError('Erreur réseau lors de l\'annulation.');
-            line.setPaymentStatus('retry');
-            return false;
-        }
+        });
     }
 
     _handleResult(data, line) {
@@ -302,13 +248,17 @@ export class PaymentAslanOmni extends PaymentInterface {
         this.dialog.add(AlertDialog, { title: 'Aslan Omni', body: msg });
     }
 
-    async _fetchWithTimeout(url, options, timeoutMs) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+    /**
+     * Calls an aslan_omni_* method of this payment method on the Odoo server.
+     * Returns its {httpStatus, body} or {error}; an unreachable Odoo is a network error.
+     */
+    async _callOmni(method, args) {
         try {
-            return await fetch(url, { ...options, signal: controller.signal });
-        } finally {
-            clearTimeout(timer);
+            return await this.env.services.orm.silent.call(
+                'pos.payment.method', method, [[this.payment_method_id.id], ...args],
+            );
+        } catch (_err) {
+            return { error: 'network' };
         }
     }
 }
