@@ -50,6 +50,12 @@ class PosPaymentMethod(models.Model):
                    'aslan_omni_print_merchant_receipt']
         return params
 
+    @api.model
+    def _load_pos_data_read(self, records, config):
+        # The POS client calls the Omni API itself, so cashiers need the API key too.
+        # Without sudo, the restricted field makes the whole model fail to load.
+        return super()._load_pos_data_read(records.sudo(), config)
+
     # Non-stored dummy field — exists only as a mount point for the Owl pairing widget.
     aslan_omni_pair_widget = fields.Char(
         compute='_compute_pair_widget',
