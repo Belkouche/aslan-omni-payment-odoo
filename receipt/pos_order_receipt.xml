@@ -9,6 +9,11 @@
                         <t t-call="aslan_omni_payment.card_slip_body" />
                         <div class="text-center">Copie client</div>
                     </div>
+                    <!-- Browser printing only: merchant copy on its own page (see pos_ticket_printer_plugin.js). -->
+                    <div t-if="payment.get('aslan_omni_merchant_inline')" style="break-before:page;page-break-before:always;">
+                        <t t-call="aslan_omni_payment.card_slip_body" />
+                        <div class="text-center">Copie commerçant - A conserver</div>
+                    </div>
                 </t>
             </xpath>
         </template>

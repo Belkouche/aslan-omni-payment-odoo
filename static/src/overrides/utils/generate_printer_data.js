@@ -8,6 +8,7 @@ patch(GeneratePrinterData.prototype, {
         this.order.payment_ids.forEach((line, i) => {
             if (line.payment_method_id?.payment_provider === 'aslan_omni' && line.uiState?.aslanOmniResult) {
                 payments[i].aslan_omni_result = line.uiState.aslanOmniResult;
+                payments[i].aslan_omni_merchant_inline = Boolean(line.uiState.aslanOmniMerchantInline);
             }
         });
         return payments;

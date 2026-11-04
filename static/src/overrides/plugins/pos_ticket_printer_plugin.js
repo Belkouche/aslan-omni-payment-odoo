@@ -3,11 +3,38 @@ import { patch } from "@web/core/utils/patch";
 
 patch(PosTicketPrinterPlugin.prototype, {
     async printOrderReceipt({ order, basic = false } = {}) {
-        const result = await super.printOrderReceipt(...arguments);
-        if (!basic) {
-            await this.printAslanOmniMerchantSlips(order);
+        if (basic) {
+            return super.printOrderReceipt(...arguments);
         }
+        if (!this.hasReceiptPrinters) {
+            // Browser printing: the order receipt and a second print share one hidden
+            // iframe and window.print() doesn't block, so a separate merchant job would
+            // replace the receipt before the dialog renders. Print the merchant copy
+            // in the same document, on its own page, instead.
+            const lines = this._aslanOmniMerchantSlipLines(order);
+            lines.forEach((line) => (line.uiState.aslanOmniMerchantInline = true));
+            try {
+                return await super.printOrderReceipt(...arguments);
+            } finally {
+                lines.forEach((line) => {
+                    line.uiState.aslanOmniMerchantInline = false;
+                    line.uiState.aslanOmniMerchantPrinted = true;
+                });
+            }
+        }
+        const result = await super.printOrderReceipt(...arguments);
+        await this.printAslanOmniMerchantSlips(order);
         return result;
+    },
+
+    /** Payment lines whose merchant card slip is still to print. */
+    _aslanOmniMerchantSlipLines(order) {
+        return order.payment_ids.filter(
+            (line) =>
+                line.uiState?.aslanOmniResult &&
+                !line.uiState.aslanOmniMerchantPrinted &&
+                line.payment_method_id?.aslan_omni_print_merchant_receipt
+        );
     },
 
     /**
@@ -16,18 +43,10 @@ patch(PosTicketPrinterPlugin.prototype, {
      * cuts between them. Once per payment line: reprints don't repeat it.
      */
     async printAslanOmniMerchantSlips(order) {
-        for (const line of order.payment_ids) {
-            const result = line.uiState?.aslanOmniResult;
-            if (
-                !result ||
-                line.uiState.aslanOmniMerchantPrinted ||
-                !line.payment_method_id?.aslan_omni_print_merchant_receipt
-            ) {
-                continue;
-            }
+        for (const line of this._aslanOmniMerchantSlipLines(order)) {
             line.uiState.aslanOmniMerchantPrinted = true;
             const iframe = await this.generateIframe("aslan_omni_payment.card_slip", {
-                payment: { aslan_omni_result: result },
+                payment: { aslan_omni_result: line.uiState.aslanOmniResult },
             });
             await this.printWithFallback({ iframe });
         }
