@@ -8,6 +8,7 @@ patch(PosPayment.prototype, {
             ...(this.uiState ?? {}),
             aslanOmniRef: null,
             aslanOmniResult: null,
+            aslanOmniMerchantPrinted: false,
         };
     },
 });

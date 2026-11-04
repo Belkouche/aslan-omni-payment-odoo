@@ -1,14 +1,14 @@
 {
     'name': 'Aslan Omni Payment',
-    'version': '1.0.1',
+    'version': '1.0.2',
     'category': 'Sales/Point of Sale',
     'summary': 'Aslan Omni card terminal integration for Odoo POS',
     'author': 'Aslan',
     'depends': ['point_of_sale'],
     'data': [
         'views/pos_payment_method_views.xml',
-        'receipt/pos_order_receipt.xml',
         'receipt/aslan_omni_card_slip.xml',
+        'receipt/pos_order_receipt.xml',
     ],
     'assets': {
         'point_of_sale._assets_pos': [

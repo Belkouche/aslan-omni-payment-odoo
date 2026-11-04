@@ -1,8 +1,45 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <odoo>
     <data>
-        <!-- Card payment slip printed by the POS after an approved Aslan Omni payment,
-             once as the merchant copy and once as the customer copy. -->
+        <!-- Card slip content for one Aslan Omni payment. Expects `payment` with an
+             `aslan_omni_result` dict (see payment_aslan_omni.js _handleResult). -->
+        <template id="aslan_omni_payment.card_slip_body">
+            <div class="aslan-omni-card-slip">
+                <div class="text-large text-center text-bold" t-out="payment['aslan_omni_result'].get('companyName') or ''" />
+                <div class="text-center mb-2">
+                    <t t-out="payment['aslan_omni_result'].get('txDate') or ''" /> <t t-out="payment['aslan_omni_result'].get('txTime') or ''" />
+                </div>
+                <div class="text-large text-center text-bold mb-2">PAIEMENT PAR CARTE</div>
+                <table class="w-100 mb-2">
+                    <tbody>
+                        <tr t-if="payment['aslan_omni_result'].get('cardScheme') or payment['aslan_omni_result'].get('cardNumber')">
+                            <td colspan="2"><t t-out="payment['aslan_omni_result'].get('cardScheme') or ''" /> <t t-out="payment['aslan_omni_result'].get('cardNumber') or ''" /></td>
+                        </tr>
+                        <tr t-if="payment['aslan_omni_result'].get('authNumber')">
+                            <td class="text-start">N° Autorisation</td>
+                            <td class="text-end" t-out="payment['aslan_omni_result']['authNumber']" />
+                        </tr>
+                        <tr t-if="payment['aslan_omni_result'].get('stan')">
+                            <td class="text-start">N° STAN</td>
+                            <td class="text-end" t-out="payment['aslan_omni_result']['stan']" />
+                        </tr>
+                        <tr t-if="payment['aslan_omni_result'].get('rrn')">
+                            <td class="text-start">RRN</td>
+                            <td class="text-end" t-out="payment['aslan_omni_result']['rrn']" />
+                        </tr>
+                        <tr t-if="payment['aslan_omni_result'].get('orderName')">
+                            <td class="text-start">Commande</td>
+                            <td class="text-end" t-out="payment['aslan_omni_result']['orderName']" />
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="text-large text-center text-bold">MONTANT : <t t-out="payment['aslan_omni_result'].get('amount') or ''" /></div>
+                <div class="text-large text-center text-bold mb-2">APPROUVE</div>
+            </div>
+        </template>
+
+        <!-- Merchant copy, printed as its own job (so the printer cuts it off
+             the customer receipt) when the payment method enables it. -->
         <template id="aslan_omni_payment.card_slip">
             <html id="pos-receipt">
                 <head>
@@ -11,37 +48,8 @@
                 </head>
                 <body>
                     <div class="pos-receipt">
-                        <div class="text-large text-center text-bold" t-out="company_name" />
-                        <div class="text-center mb-2">
-                            <t t-out="result.get('txDate') or ''" /> <t t-out="result.get('txTime') or ''" />
-                        </div>
-                        <div class="text-large text-center text-bold mb-2">PAIEMENT PAR CARTE</div>
-                        <table class="w-100 mb-2">
-                            <tbody>
-                                <tr t-if="result.get('cardScheme') or result.get('cardNumber')">
-                                    <td colspan="2"><t t-out="result.get('cardScheme') or ''" /> <t t-out="result.get('cardNumber') or ''" /></td>
-                                </tr>
-                                <tr t-if="result.get('authNumber')">
-                                    <td class="text-start">N° Autorisation</td>
-                                    <td class="text-end" t-out="result['authNumber']" />
-                                </tr>
-                                <tr t-if="result.get('stan')">
-                                    <td class="text-start">N° STAN</td>
-                                    <td class="text-end" t-out="result['stan']" />
-                                </tr>
-                                <tr t-if="result.get('rrn')">
-                                    <td class="text-start">RRN</td>
-                                    <td class="text-end" t-out="result['rrn']" />
-                                </tr>
-                                <tr t-if="order_name">
-                                    <td class="text-start">Commande</td>
-                                    <td class="text-end" t-out="order_name" />
-                                </tr>
-                            </tbody>
-                        </table>
-                        <div class="text-large text-center text-bold">MONTANT : <t t-out="amount" /></div>
-                        <div class="text-large text-center text-bold mb-2">APPROUVE</div>
-                        <div class="text-center" t-out="copy" />
+                        <t t-call="aslan_omni_payment.card_slip_body" />
+                        <div class="text-center">Copie commerçant - A conserver</div>
                     </div>
                 </body>
             </html>

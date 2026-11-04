@@ -12,6 +12,7 @@
                             <field name="aslan_omni_api_url" invisible="payment_provider != 'aslan_omni'"/>
                             <field name="aslan_omni_device_id" readonly="1" invisible="payment_provider != 'aslan_omni'"/>
                             <field name="aslan_omni_api_key" password="True" readonly="1" invisible="payment_provider != 'aslan_omni'"/>
+                            <field name="aslan_omni_print_merchant_receipt" invisible="payment_provider != 'aslan_omni'"/>
                             <field name="aslan_omni_pair_widget" widget="aslan_omni_pairing" nolabel="1" invisible="payment_provider != 'aslan_omni'"/>
                         </group>
                     </page>

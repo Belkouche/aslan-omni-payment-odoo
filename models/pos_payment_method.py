@@ -28,6 +28,12 @@ class PosPaymentMethod(models.Model):
         help='Base URL of the Aslan Omni API (cloud relay endpoint).',
     )
 
+    aslan_omni_print_merchant_receipt = fields.Boolean(
+        string='Print merchant card receipt',
+        default=True,
+        help='Print the merchant copy of the card slip, cut from the customer receipt.',
+    )
+
     @api.constrains('aslan_omni_api_url')
     def _check_aslan_omni_api_url(self):
         for record in self:
@@ -40,7 +46,8 @@ class PosPaymentMethod(models.Model):
     @api.model
     def _load_pos_data_fields(self, config):
         params = super()._load_pos_data_fields(config)
-        params += ['aslan_omni_device_id', 'aslan_omni_api_key', 'aslan_omni_api_url']
+        params += ['aslan_omni_device_id', 'aslan_omni_api_key', 'aslan_omni_api_url',
+                   'aslan_omni_print_merchant_receipt']
         return params
 
     # Non-stored dummy field — exists only as a mount point for the Owl pairing widget.
