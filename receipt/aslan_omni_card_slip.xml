@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo>
+    <data>
+        <!-- Card payment slip printed by the POS after an approved Aslan Omni payment,
+             once as the merchant copy and once as the customer copy. -->
+        <template id="aslan_omni_payment.card_slip">
+            <html id="pos-receipt">
+                <head>
+                    <meta charset="UTF-8"></meta>
+                    <t t-call="point_of_sale.pos_order_receipt_style" />
+                </head>
+                <body>
+                    <div class="pos-receipt">
+                        <div class="text-large text-center text-bold" t-out="company_name" />
+                        <div class="text-center mb-2">
+                            <t t-out="result.get('txDate') or ''" /> <t t-out="result.get('txTime') or ''" />
+                        </div>
+                        <div class="text-large text-center text-bold mb-2">PAIEMENT PAR CARTE</div>
+                        <table class="w-100 mb-2">
+                            <tbody>
+                                <tr t-if="result.get('cardScheme') or result.get('cardNumber')">
+                                    <td colspan="2"><t t-out="result.get('cardScheme') or ''" /> <t t-out="result.get('cardNumber') or ''" /></td>
+                                </tr>
+                                <tr t-if="result.get('authNumber')">
+                                    <td class="text-start">N° Autorisation</td>
+                                    <td class="text-end" t-out="result['authNumber']" />
+                                </tr>
+                                <tr t-if="result.get('stan')">
+                                    <td class="text-start">N° STAN</td>
+                                    <td class="text-end" t-out="result['stan']" />
+                                </tr>
+                                <tr t-if="result.get('rrn')">
+                                    <td class="text-start">RRN</td>
+                                    <td class="text-end" t-out="result['rrn']" />
+                                </tr>
+                                <tr t-if="order_name">
+                                    <td class="text-start">Commande</td>
+                                    <td class="text-end" t-out="order_name" />
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div class="text-large text-center text-bold">MONTANT : <t t-out="amount" /></div>
+                        <div class="text-large text-center text-bold mb-2">APPROUVE</div>
+                        <div class="text-center" t-out="copy" />
+                    </div>
+                </body>
+            </html>
+        </template>
+    </data>
+</odoo>

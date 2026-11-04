@@ -265,6 +265,10 @@ export class PaymentAslanOmni extends PaymentInterface {
                 txDate:      data.txDate,
                 txTime:      data.txTime,
             };
+            // Not awaited: printing must never hold up or fail the payment.
+            this._printCardSlips(line, line.uiState.aslanOmniResult).catch((err) => {
+                console.warn('Aslan Omni: card slip printing failed', err);
+            });
             return true;
         }
         if (data.status === 'reversed') {
@@ -286,6 +290,25 @@ export class PaymentAslanOmni extends PaymentInterface {
         this._showError(`Paiement refusé${rc}.`);
         line.setPaymentStatus('retry');
         return false;
+    }
+
+    /**
+     * Prints the card slip twice — merchant copy then customer copy — on the
+     * POS receipt printer (browser print dialog when none is configured).
+     */
+    async _printCardSlips(line, result) {
+        const data = {
+            company_name: this.pos.company.name,
+            amount: this.pos.formatCurrency(line.amount),
+            order_name: line.pos_order_id.name || '',
+            result,
+        };
+        for (const copy of ['Copie commerçant - A conserver', 'Copie client']) {
+            const iframe = await this.pos.ticketPrinter.generateIframe(
+                'aslan_omni_payment.card_slip', { ...data, copy },
+            );
+            await this.pos.ticketPrinter.printWithFallback({ iframe });
+        }
     }
 
     _maskPan(pan) {
