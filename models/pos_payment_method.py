@@ -96,6 +96,7 @@ class PosPaymentMethod(models.Model):
         self.ensure_one()
         if not self.env.su and not self.env.user.has_group('point_of_sale.group_pos_user'):
             raise AccessDenied()
+        self.check_access('read')  # record rules (e.g. multi-company) before going sudo
         method_sudo = self.sudo()
         if method_sudo.payment_provider != 'aslan_omni' or not method_sudo.aslan_omni_api_key \
                 or not method_sudo.aslan_omni_device_id:
