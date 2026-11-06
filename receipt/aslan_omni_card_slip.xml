@@ -15,6 +15,14 @@
                         <tr t-if="payment['aslan_omni_result'].get('cardScheme') or payment['aslan_omni_result'].get('cardNumber')">
                             <td colspan="2"><t t-out="payment['aslan_omni_result'].get('cardScheme') or ''" /> <t t-out="payment['aslan_omni_result'].get('cardNumber') or ''" /></td>
                         </tr>
+                        <tr t-if="payment['aslan_omni_result'].get('acquirerMerchantId')">
+                            <td class="text-start">N° Commerçant</td>
+                            <td class="text-end" t-out="payment['aslan_omni_result']['acquirerMerchantId']" />
+                        </tr>
+                        <tr t-if="payment['aslan_omni_result'].get('acquirerTerminalId')">
+                            <td class="text-start">N° Terminal</td>
+                            <td class="text-end" t-out="payment['aslan_omni_result']['acquirerTerminalId']" />
+                        </tr>
                         <tr t-if="payment['aslan_omni_result'].get('authNumber')">
                             <td class="text-start">N° Autorisation</td>
                             <td class="text-end" t-out="payment['aslan_omni_result']['authNumber']" />
@@ -26,6 +34,10 @@
                         <tr t-if="payment['aslan_omni_result'].get('rrn')">
                             <td class="text-start">RRN</td>
                             <td class="text-end" t-out="payment['aslan_omni_result']['rrn']" />
+                        </tr>
+                        <tr t-if="payment['aslan_omni_result'].get('transactionNumber')">
+                            <td class="text-start">N° Transaction</td>
+                            <td class="text-end" t-out="payment['aslan_omni_result']['transactionNumber']" />
                         </tr>
                         <tr t-if="payment['aslan_omni_result'].get('orderName')">
                             <td class="text-start">Commande</td>

@@ -210,6 +210,9 @@ export class PaymentAslanOmni extends PaymentInterface {
                 stan:        data.stan,
                 txDate:      data.txDate,
                 txTime:      data.txTime,
+                acquirerMerchantId: data.acquirerMerchantId,
+                acquirerTerminalId: data.acquirerTerminalId,
+                transactionNumber:  data.transactionNumber,
                 // Header/amount of the card slips printed with the order receipt.
                 companyName: this.pos.company.name,
                 amount:      this.pos.formatCurrency(line.amount),
