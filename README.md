@@ -124,18 +124,60 @@ Odoo: payment line → "done", stores masked card details in line.uiState for th
 
 ### Failure path A — terminal not connected
 
-The cloud answers `503` immediately (passed through by the Odoo server). Odoo shows *"Terminal non connecté"* and
+The cloud answers `503` immediately (passed through by the Odoo server). Odoo shows *"Terminal non connecté"*
+— or, with an API that sends `lastSeenAt`, *"Terminal hors ligne — vu il y a N min"* — and
 lets the cashier retry. No card was read, no money moved.
+
+If the terminal dropped its stream only a moment ago, a newer API instead
+queues the command and answers `202 { commandId, terminalState: "reconnecting" }`:
+Odoo shows a non-blocking *"Terminal en reconnexion…"* notification and keeps
+polling — the terminal picks the command up when it reconnects.
+
+If the terminal is busy with **another** ref (another till's payment), a newer
+API answers `409 { code: "terminal_busy" }` **without** a `commandId`; Odoo
+shows that message and does **not** poll (it must never attach to someone
+else's payment).
 
 ### Failure path B — customer never presents a card
 
 After 95 s the command's status turns to `timeout` (a direct `408` is also
-handled). Odoo shows *"Délai expiré"*. No money moved.
+handled). Odoo shows *"Délai expiré"* (or the API's `failure` message, see
+[Decline reasons](#decline-reasons-and-uncertain-results)). If the POS's own
+97 s polling window ends without any final status (no `timeout` either), it makes
+one last status call, then shows *"Résultat incertain — vérifiez le terminal
+avant de relancer (relancer ne débite pas deux fois)"*.
+
+### Decline reasons and uncertain results
+
+Newer API versions add a `failure` object to every non-approved result
+(`source`, `category`, `message`, `cashierAction`, `retryable`, `uncertain`, …).
+When it is present, Odoo shows `failure.message` + `failure.cashierAction`
+(e.g. *"Solde insuffisant. Essayez une autre carte."*); when it is absent (older
+API) Odoo shows the same text as before (*"Paiement refusé (RC: 51)."*,
+*"Paiement annulé par le client."*, …).
+
+When `failure.uncertain` is `true` (e.g. NapsPay returned a generic `500`, or
+the outcome is otherwise unknown), Odoo asks *"Résultat incertain … Vérifiez le
+terminal. Relancer quand même ?"*. **Relancer** re-sends the same ref with
+`force: true`, which tells the API to re-arm the command; **Non** leaves the
+line in retry. An API that does not know `force` ignores it and returns the
+stored result again.
+
+An approval the API resolved after its own timeout (`resolvedLate: true`) is
+treated as a normal approval, with a *"Paiement approuvé tardivement"*
+notification.
+
+While polling, a newer API also reports progress: if `deliveredAt` is still
+empty 10 s after the request Odoo notifies *"Le terminal n'a pas encore reçu la
+demande"*, and `stage: "started"` shows *"Paiement en cours sur le terminal"*.
+Both are notifications only; they never change the line. A missing field
+(older API) means "unknown" and shows nothing.
 
 ### Failure path C — the internet drops mid-payment (the important one)
 
-This is where the design earns its keep. The call to the Odoo server (or the
-Odoo server's call to the cloud) dies with a network error — but the terminal
+This is where the design earns its keep. The call to the Odoo server (*"Connexion au serveur Odoo perdue"*) or the
+Odoo server's call to the cloud (*"Le serveur Odoo n'arrive pas à joindre
+Aslan"*, the server method returns `{error: 'api_unreachable'}`) dies with a network error — but the terminal
 may still be reading the card, and the cloud may have already recorded (or
 completed) the command. The add-on does **not** give up. It **sends
 `aslan_omni_send_payment` again with the exact same `ref`** (waiting 3 s between
@@ -377,7 +419,15 @@ cashier** to also cancel on the terminal if it is still asking for a card.
 This is safe against double-charging **only because of rule 8.1**: if the cashier
 re-charges the same line after a cosmetic cancel, the stable ref makes the server
 re-attach to the existing command instead of starting a new card read. Removing
-the stable ref would silently reopen this hole. (A true remote-abort would
+the stable ref would silently reopen this hole.
+
+Cancel also wakes the running poll loop, which then stops touching the line
+(otherwise a late answer could flip a line the cashier has already re-charged).
+A detached watcher keeps following the command until its deadline; if the
+terminal approves it after all, Odoo shows *"Le terminal a approuvé le paiement
+annulé — relancez la ligne pour l'enregistrer"*. Re-charging the line then
+attaches to the approved command through the stable ref — the card is not
+debited again. The watcher stops as soon as a new Charge on that line starts. (A true remote-abort would
 require a new terminal-protocol message in `aslan-omni-api`; it does not exist
 yet — see [Known limitations](#14-known-limitations).)
 
@@ -387,11 +437,11 @@ yet — see [Known limitations](#14-known-limitations).)
 
 | File | What it does |
 |------|--------------|
-| `__manifest__.py` | Odoo module descriptor. Declares the dependency on `point_of_sale`, loads the views and the two receipt templates, and splits front-end assets across **three** bundles — see [§10](#10-where-odoo-20-bends-this-add-ons-design-read-if-youre-new-to-odoo-pos-internals) for why there are three, not one. Version `1.1.1` (deliberately **not** prefixed with an Odoo series — see the note under §10), LGPL-3. |
-| `models/pos_payment_method.py` | Extends `pos.payment.method` (not `pos.config` — see §10). Adds `aslan_omni_device_id`, `aslan_omni_api_key` (group-restricted, never sent to the POS — see §12), `aslan_omni_api_url` (HTTPS-only via `@api.constrains`) and `aslan_omni_print_merchant_receipt`, registers `'aslan_omni'` in `_get_terminal_provider_selection()`, and pushes **only** `aslan_omni_device_id` and `aslan_omni_print_merchant_receipt` to the POS client via `_load_pos_data_fields`. Also holds the server methods the POS calls — `aslan_omni_send_payment`, `aslan_omni_send_reversal`, `aslan_omni_command_status` — all built on `_aslan_omni_request`, which makes the Omni API call with the key. `aslan_omni_pair_widget` is a non-stored dummy field that exists only as a mount point for the Owl pairing widget. |
+| `__manifest__.py` | Odoo module descriptor. Declares the dependency on `point_of_sale`, loads the views and the two receipt templates, and splits front-end assets across **three** bundles — see [§10](#10-where-odoo-20-bends-this-add-ons-design-read-if-youre-new-to-odoo-pos-internals) for why there are three, not one. Version `1.2.0` (deliberately **not** prefixed with an Odoo series — see the note under §10), LGPL-3. |
+| `models/pos_payment_method.py` | Extends `pos.payment.method` (not `pos.config` — see §10). Adds `aslan_omni_device_id`, `aslan_omni_api_key` (group-restricted, never sent to the POS — see §12), `aslan_omni_api_url` (HTTPS-only via `@api.constrains`) and `aslan_omni_print_merchant_receipt`, registers `'aslan_omni'` in `_get_terminal_provider_selection()`, and pushes **only** `aslan_omni_device_id` and `aslan_omni_print_merchant_receipt` to the POS client via `_load_pos_data_fields`. Also holds the server methods the POS calls — `aslan_omni_send_payment`, `aslan_omni_send_reversal` (both take an optional `force=False`, sent as `force: true` only when true), `aslan_omni_command_status` — all built on `_aslan_omni_request`, which makes the Omni API call with the key and returns `{error: 'api_unreachable'}` when the API cannot be reached. `aslan_omni_pair_widget` is a non-stored dummy field that exists only as a mount point for the Owl pairing widget. |
 | `models/ir_ui_view.py` | Extends `ir.ui.view._get_xml_ids_to_load()` so the card slip templates (`aslan_omni_payment.card_slip_body` and `aslan_omni_payment.card_slip`) are shipped to the POS client, which renders them. |
 | `views/pos_payment_method_views.xml` | Adds the **Aslan Omni** notebook page to the standard `pos.payment.method` form (`point_of_sale.pos_payment_method_view_form`): API URL field, read-only Device ID and API Key, the **Print merchant card receipt** checkbox, and the pairing widget. The page is shown only when `payment_provider == 'aslan_omni'`. |
-| `static/src/app/payment_aslan_omni.js` | **The core.** Subclass of `PaymentInterface`. Implements `sendPaymentRequest` (pay + recovery loop), `sendPaymentCancel` (UI-only reset + warning), `sendReversal` (void), `_pollForResult` (status polling), `_callOmni` (ORM call to the server methods), result handling (`_handleResult` also keeps the slip fields), and defensive PAN masking. Registered in `registry.category('pos_payment_providers')` under the key `'aslan_omni'`. |
+| `static/src/app/payment_aslan_omni.js` | **The core.** Subclass of `PaymentInterface`. Implements `sendPaymentRequest` (pay + recovery loop), `sendPaymentCancel` (UI-only reset + warning + stops the poll loop), `sendReversal` (void), `_pollForResult` (status polling, progress notifications, last status call at the deadline), `_watchAfterCancel` (approval-after-cancel notice), `_callOmni` (ORM call to the server methods), result handling (`_handleResult` also keeps the slip fields), and defensive PAN masking. Registered in `registry.category('pos_payment_providers')` under the key `'aslan_omni'`. |
 | `static/src/overrides/models/pos_payment.js` | A `patch()` on the core `PosPayment` model that adds `uiState.aslanOmniRef` / `uiState.aslanOmniResult` — the runtime-only (never persisted) slots the payment interface uses to remember the idempotency ref and the terminal's result for a given line — plus `aslanOmniMerchantPrinted` (merchant slip already printed) and `aslanOmniMerchantInline` (merchant slip is being added to the receipt document, browser printing). See §10 for why this lives in `uiState` rather than as a plain property. |
 | `static/src/overrides/utils/generate_printer_data.js` | A `patch()` on `GeneratePrinterData.generatePaymentData` that copies `line.uiState.aslanOmniResult` (and the `aslan_omni_merchant_inline` flag) into the plain-data payment dict the receipt template renders from. Without this, the receipt template below would never see the card details, because `uiState` is runtime-only and not part of the normal payment-to-receipt-data pipeline. |
 | `static/src/overrides/plugins/pos_ticket_printer_plugin.js` | A `patch()` on `PosTicketPrinterPlugin.printOrderReceipt`. With receipt printers it prints the merchant copy as a separate job right after the order receipt (`printAslanOmniMerchantSlips`, template `aslan_omni_payment.card_slip`) so the printer cuts between them. With browser printing it sets `aslanOmniMerchantInline` so the copy lands on its own page in the same document (separate jobs would replace each other in the shared iframe). Only lines with a result, not yet printed, on a method with the setting on. |
@@ -503,8 +553,8 @@ unless noted. Except for pair and revoke, the caller is the **Odoo server**
 | Method & path | Called by | Auth | Purpose |
 |---------------|-----------|------|---------|
 | `POST /cloud/pair` | pairing widget (manager's browser) | none (code is the secret) | Exchange the 8-char pairing code for `{ deviceId, apiKey }`. Rate-limited (10/min/IP). Code TTL 120 s. |
-| `POST /cloud/pay` | Odoo server (`aslan_omni_send_payment`) | `Bearer <apiKey>` + `X-Device-Id` | Start a payment, sent with `wait: false`: answers `202 { commandId }` once relayed. Keyed on `ref` for idempotency. Returns the final result (`200`) if the ref already completed, `409 + commandId` if the ref is already running, `409 ref already used` if the ref belongs to another merchant or device, `503` if the terminal is offline. (Without `wait: false` it would long-poll up to 95 s and answer `408` on timeout; this add-on does not use that mode.) |
-| `GET /cloud/pay/:commandId/status` | Odoo server (`aslan_omni_command_status`), polled by the POS every 3 s | `Bearer <apiKey>` + `X-Device-Id` | Status of a pay or reverse command: `{ status: pending\|completed\|timeout, resultStatus, ... }`. The command id is validated (`[A-Za-z0-9_-]{1,64}`) before it goes into the URL. |
+| `POST /cloud/pay` | Odoo server (`aslan_omni_send_payment`) | `Bearer <apiKey>` + `X-Device-Id` | Start a payment, sent with `wait: false`: answers `202 { commandId }` once relayed. Keyed on `ref` for idempotency. Returns the final result (`200`) if the ref already completed, `409 + commandId` if the ref is already running, `409 ref already used` if the ref belongs to another merchant or device, `503` if the terminal is offline. Newer API versions add: `409 { code: "terminal_busy" }` **without** `commandId` (another ref is running on the terminal — not polled), `202 { terminalState: "reconnecting" }`, `lastSeenAt` on the 503, and the optional `force: true` body flag (re-arm an uncertain stored result). (Without `wait: false` it would long-poll up to 95 s and answer `408` on timeout; this add-on does not use that mode.) |
+| `GET /cloud/pay/:commandId/status` | Odoo server (`aslan_omni_command_status`), polled by the POS every 3 s | `Bearer <apiKey>` + `X-Device-Id` | Status of a pay or reverse command: `{ status: pending\|completed\|timeout, resultStatus, ... }`. Newer API versions add `failure`, `responseMessage`, `attempt`, `deliveredAt`, `stage` and `resolvedLate`; all are optional for this add-on. The command id is validated (`[A-Za-z0-9_-]{1,64}`) before it goes into the URL. |
 | `POST /cloud/reverse` | Odoo server (`aslan_omni_send_reversal`) | `Bearer <apiKey>` + `X-Device-Id` | Void a prior approved payment using its `stan`. Same `wait: false` + idempotent-ref model as pay. |
 | `POST /cloud/devices/:deviceId/revoke` | pairing widget (manager's browser) | `Bearer <apiKey>` | Revoke this device's pairing (clears its server-side key). The widget reads the key through the manager-only field to do this. |
 
@@ -557,10 +607,16 @@ sees the server's `timeout` status instead of giving up first.
 | Symptom | Likely cause | What to do |
 |---------|--------------|------------|
 | *"Terminal Aslan Omni non configuré"* when charging | The payment method has no stored API key / device id | Pair the terminal (section 5). |
-| *"Terminal non connecté"* (503) | The terminal has no live cloud connection | Check the terminal is powered on and online; retry. |
+| *"Terminal non connecté"* / *"Terminal hors ligne — vu il y a N min"* (503) | The terminal has no live cloud connection | Check the terminal is powered on and online; retry. |
+| *"Terminal occupé par un autre paiement"* (409 `terminal_busy`) | Another till's payment is running on the same terminal | Wait for it to finish, then retry. |
+| *"Terminal en reconnexion…"* (notification) | The terminal lost its stream a few seconds ago; the command is queued | Nothing — Odoo keeps polling. |
+| *"Le terminal n'a pas encore reçu la demande"* (notification) | The terminal has not acknowledged the command after 10 s | Check the terminal screen and connection; Odoo keeps polling. |
+| *"Résultat incertain…"* | The outcome is unknown (generic terminal error, or no final status at the end of polling) | Look at the terminal / NapsPay history first. Relaunching uses the same ref and never debits twice for a known approval. |
+| *"Le terminal a approuvé le paiement annulé…"* (notification) | The cashier cancelled in Odoo, but the customer paid on the terminal | Re-charge the same line: it attaches to the approval and records it, no second debit. |
+| *"Résultat de l'annulation inconnu"* | A reversal got no final result | Check on the terminal whether the void went through before retrying. |
 | *"Délai expiré"* (408, or a `timeout` status while polling) | Customer never presented a card within 95 s | Retry — nothing was charged. |
 | *"Erreur serveur: ref already used"* (409) | The `ref` already belongs to another merchant or another terminal — e.g. the payment method was re-paired to a different terminal mid-payment | Start a new payment line (a new line gets a new ref) and charge again. |
-| *"Erreur réseau…"* | The POS could not reach Odoo, or Odoo could not reach the Omni API, even after the recovery re-sends | Check connectivity, then re-click **Charge** on the same line — the stable ref prevents a double charge. |
+| *"Connexion au serveur Odoo perdue"* / *"Le serveur Odoo n'arrive pas à joindre Aslan"* | The POS could not reach Odoo / Odoo could not reach the Omni API, even after the recovery re-sends | Check connectivity, then re-click **Charge** on the same line — the stable ref prevents a double charge. |
 | *"Aslan Omni API URL must use HTTPS"* | The configured URL is `http://` or malformed | Fix the **Aslan Omni API URL** to an `https://` endpoint. |
 | Merchant slip does not print | **Print merchant card receipt** is off on the payment method, the POS session was opened before it was switched on, or this line's merchant copy already printed (once per payment line) | Tick the setting, close and reopen the POS session. |
 | N° Commerçant / N° Terminal / N° Transaction missing from the slip | The Omni API or terminal app version does not send `acquirerMerchantId` / `acquirerTerminalId` / `transactionNumber` | Update the terminal app / API; the rows are simply omitted until then. |
