@@ -61,8 +61,14 @@ class PosPaymentMethod(models.Model):
         params += ['aslan_omni_device_id', 'aslan_omni_print_merchant_receipt']
         return params
 
-    def aslan_omni_send_payment(self, ref, amount_cents, cashier_id=None, till_id=None, description=None):
-        """Relay a payment to the paired terminal. Called from the POS client."""
+    def aslan_omni_send_payment(self, ref, amount_cents, cashier_id=None, till_id=None, description=None,
+                                force=False):
+        """Relay a payment to the paired terminal. Called from the POS client.
+
+        `force` (sent only when true) asks the API to re-arm a ref whose stored
+        outcome is uncertain, after the cashier checked the terminal. An API that
+        does not know the flag ignores it.
+        """
         return self._aslan_omni_request('POST', '/cloud/pay', {
             'ref': ref,
             'amountCents': amount_cents,
@@ -70,15 +76,17 @@ class PosPaymentMethod(models.Model):
             'tillId': till_id or None,
             'description': description or None,
             'wait': False,
+            'force': True if force else None,
         })
 
-    def aslan_omni_send_reversal(self, ref, original_ref, stan):
+    def aslan_omni_send_reversal(self, ref, original_ref, stan, force=False):
         """Relay a reversal of an approved payment. Called from the POS client."""
         return self._aslan_omni_request('POST', '/cloud/reverse', {
             'ref': ref,
             'originalRef': original_ref,
             'stan': stan,
             'wait': False,
+            'force': True if force else None,
         })
 
     def aslan_omni_command_status(self, command_id):
@@ -91,7 +99,9 @@ class PosPaymentMethod(models.Model):
     def _aslan_omni_request(self, method, path, payload=None):
         """Call the Omni API with the merchant key, which never leaves the server.
 
-        Returns {'httpStatus': int, 'body': dict}, or {'error': 'not_configured' | 'network'}.
+        Returns {'httpStatus': int, 'body': dict}, or {'error': 'not_configured' | 'api_unreachable'}.
+        ('api_unreachable' = this server could not reach the API; the POS client
+        reports its own failure to reach this server as 'network'.)
         """
         self.ensure_one()
         if not self.env.su and not self.env.user.has_group('point_of_sale.group_pos_user'):
@@ -114,7 +124,7 @@ class PosPaymentMethod(models.Model):
             )
         except requests.exceptions.RequestException as e:
             _logger.warning('Aslan Omni %s %s failed: %s', method, path, e)
-            return {'error': 'network'}
+            return {'error': 'api_unreachable'}
         try:
             body = resp.json()
         except ValueError:
