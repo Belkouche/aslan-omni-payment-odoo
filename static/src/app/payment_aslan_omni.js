@@ -13,9 +13,10 @@ const NOT_DELIVERED_WARN_MS = 10000;
 const RETRYABLE_ERRORS = ['network', 'api_unreachable'];
 
 const MSG_NOT_CONFIGURED = 'Terminal Aslan Omni non configuré. Associez un terminal dans les paramètres.';
-const MSG_ODOO_LOST      = 'Connexion au serveur Odoo perdue. Relancez le paiement (pas de double débit).';
-const MSG_API_LOST       = "Le serveur Odoo n'arrive pas à joindre Aslan. Relancez le paiement (pas de double débit).";
-const MSG_UNCERTAIN      = 'Résultat incertain — vérifiez le terminal avant de relancer (relancer ne débite pas deux fois).';
+const MSG_CHECK        = 'Vérifiez le terminal avant de relancer.';
+const MSG_ODOO_LOST      = `Connexion au serveur Odoo perdue. ${MSG_CHECK}`;
+const MSG_API_LOST       = `Le serveur Odoo n'arrive pas à joindre Aslan. ${MSG_CHECK}`;
+const MSG_UNCERTAIN      = `Résultat incertain. ${MSG_CHECK}`;
 const MSG_REV_UNKNOWN    = "Résultat de l'annulation inconnu — vérifiez sur le terminal.";
 
 export class PaymentAslanOmni extends PaymentInterface {
@@ -83,7 +84,9 @@ export class PaymentAslanOmni extends PaymentInterface {
      * does not know `force` ignores it and returns the stored result.
      */
     async _sendPayment(line, force) {
-        const session = { cancelled: false, wake: null };
+        // The order is kept so the cancel watcher can tell whether the line was
+        // deleted afterwards (a deleted line loses its pos_order_id).
+        const session = { cancelled: false, wake: null, order: line.pos_order_id };
         this._sessions.set(line.uuid, session);
 
         const cashier = this.pos.accessRight.cashier;
@@ -123,10 +126,11 @@ export class PaymentAslanOmni extends PaymentInterface {
         // own back button / timeout) can stop it. From Odoo we can only reset the
         // POS UI — we CANNOT guarantee the terminal stopped.
         //
-        // This is safe against double-charging ONLY because the ref is stable
-        // (_payRef): if the cashier re-charges the same line, /cloud/pay sees the
-        // same ref and re-attaches to the existing command instead of starting a
-        // second card read. We warn the cashier so they verify the terminal.
+        // The stable ref (_payRef) is the double-charge protection here: if the
+        // cashier re-charges the same line, /cloud/pay sees the same ref and
+        // re-attaches to a running or approved command instead of starting a
+        // second card read. It cannot see a terminal whose outcome is unknown, so
+        // we tell the cashier to check the terminal before re-charging.
         //
         // The running poll loop is woken and stops touching the line; a detached
         // watcher keeps following the command and tells the cashier if the
@@ -140,7 +144,7 @@ export class PaymentAslanOmni extends PaymentInterface {
         line.setPaymentStatus('retry');
         this._showError(
             "Annulation côté caisse uniquement. Si le terminal demande encore la carte, "
-            + "annulez AUSSI sur le terminal (bouton retour). Relancer le paiement ne débite pas deux fois.",
+            + `annulez AUSSI sur le terminal (bouton retour). ${MSG_CHECK}`,
         );
         return true;
     }
@@ -255,7 +259,9 @@ export class PaymentAslanOmni extends PaymentInterface {
      * After a cashier-side cancel, keeps following the command WITHOUT touching
      * the line. If the terminal approves it anyway, the cashier is told to
      * re-charge the line: the stable ref makes that re-charge attach to the
-     * approved command (no second debit) and record it.
+     * approved command, which the API returns instead of starting a new card read.
+     * If the line was deleted meanwhile, that re-attach is impossible (a new line
+     * has a new ref), so the cashier is told to check the order instead.
      * Stops as soon as a new Charge on the same line takes over.
      */
     async _watchAfterCancel(commandId, line, session, deadline) {
@@ -267,7 +273,11 @@ export class PaymentAslanOmni extends PaymentInterface {
             if (res.error || res.httpStatus !== 200) continue;
             const data = res.body;
             if (data.status === 'completed' && data.resultStatus === 'approved') {
-                this._notify('Le terminal a approuvé le paiement annulé — relancez la ligne pour l\'enregistrer.', 'warning', true);
+                const lineExists = session.order?.payment_ids?.some(p => p.uuid === line.uuid);
+                this._notify(lineExists
+                    ? 'Le terminal a approuvé le paiement annulé — relancez la ligne pour l\'enregistrer.'
+                    : 'Le terminal a approuvé le paiement annulé, mais la ligne a été supprimée : vérifiez la commande.',
+                'warning', true);
                 return;
             }
             if (data.status !== 'pending') return;
@@ -329,6 +339,19 @@ export class PaymentAslanOmni extends PaymentInterface {
 
     async _handleResult(data, line, session) {
         if (data.status === 'approved') {
+            // SAFETY: a ref can be approved for an amount other than the line's
+            // (line edited after the charge started, API re-arm with a new amount
+            // on an older API...). Never record a line for an amount the customer
+            // was not charged. A newer API sends the charged amountCents; an older
+            // one does not, and then nothing changes.
+            const lineCents = Math.round(line.amount * 100);
+            if (Number.isInteger(data.amountCents) && data.amountCents !== lineCents) {
+                const fmt = c => this.pos.formatCurrency(c / 100);
+                this._showError(`Montant débité ${fmt(data.amountCents)} ≠ montant de la ligne ${fmt(lineCents)}. `
+                    + `Corrigez la ligne à ${fmt(data.amountCents)} puis relancez (le paiement existant sera repris).`);
+                line.setPaymentStatus('retry');
+                return false;
+            }
             line.setPaymentStatus('done');
             line.uiState.aslanOmniResult = {
                 // Enforce masking defensively — never store/display a full PAN.
@@ -353,8 +376,11 @@ export class PaymentAslanOmni extends PaymentInterface {
             return true;
         }
         if (data.status === 'reversed') {
-            line.setPaymentStatus('done');
-            return true;
+            // This pay ref was voided on the terminal: nothing is owed on it, so the
+            // line must not count as paid.
+            this._showError('Ce paiement a déjà été annulé sur le terminal.');
+            line.setPaymentStatus('retry');
+            return false;
         }
 
         // Not approved. A newer API explains why in `failure`; an older one does not.

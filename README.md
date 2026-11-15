@@ -144,8 +144,9 @@ After 95 s the command's status turns to `timeout` (a direct `408` is also
 handled). Odoo shows *"Délai expiré"* (or the API's `failure` message, see
 [Decline reasons](#decline-reasons-and-uncertain-results)). If the POS's own
 97 s polling window ends without any final status (no `timeout` either), it makes
-one last status call, then shows *"Résultat incertain — vérifiez le terminal
-avant de relancer (relancer ne débite pas deux fois)"*.
+one last status call, then shows *"Résultat incertain. Vérifiez le terminal
+avant de relancer."* Odoo makes no promise that a relaunch is free: when the
+outcome is unknown, only the terminal knows whether the card was debited.
 
 ### Decline reasons and uncertain results
 
@@ -166,6 +167,17 @@ stored result again.
 An approval the API resolved after its own timeout (`resolvedLate: true`) is
 treated as a normal approval, with a *"Paiement approuvé tardivement"*
 notification.
+
+Two approvals are **not** recorded on the line:
+- **Amount mismatch.** When the result carries `amountCents` (newer API: the
+  amount actually charged) and it differs from the line amount, the line stays
+  in retry with *"Montant débité X ≠ montant de la ligne Y. Corrigez la ligne à
+  X puis relancez (le paiement existant sera repris)."* Re-charging after the fix
+  uses the same ref, so the API returns the existing approval. An older API does
+  not send `amountCents`, and nothing changes.
+- **Already reversed.** A pay ref whose result is `reversed` was voided on the
+  terminal; the line stays in retry with *"Ce paiement a déjà été annulé sur le
+  terminal."* (1.1.1 marked it paid.)
 
 While polling, a newer API also reports progress: if `deliveredAt` is still
 empty 10 s after the request Odoo notifies *"Le terminal n'a pas encore reçu la
@@ -188,9 +200,13 @@ ref is stable, the server recognises it and:
   approved/declined — correct, no double charge);
 - if it is still **pending** → returns `409 + commandId`, and we switch to
   polling the command's status until it resolves;
-- if a prior attempt **timed out** → the server safely re-relays the same ref.
+- if a prior attempt **timed out** → the server re-relays the same ref (a newer
+  API does so only if the terminal never acknowledged it; otherwise it answers
+  with an uncertain result and the cashier must check the terminal and confirm).
 
-In every branch the customer's card is charged **at most once**. See
+The add-on never starts a second command for the same line, but when an outcome
+is unknown only the terminal can tell whether the card was debited — hence
+*"Vérifiez le terminal avant de relancer."* See
 [section 8](#8-the-money-safety-rules-read-this-before-editing-payment-code) for
 why the stable ref is load-bearing here.
 
@@ -426,8 +442,11 @@ Cancel also wakes the running poll loop, which then stops touching the line
 A detached watcher keeps following the command until its deadline; if the
 terminal approves it after all, Odoo shows *"Le terminal a approuvé le paiement
 annulé — relancez la ligne pour l'enregistrer"*. Re-charging the line then
-attaches to the approved command through the stable ref — the card is not
-debited again. The watcher stops as soon as a new Charge on that line starts. (A true remote-abort would
+attaches to the approved command through the stable ref, and the API returns
+that approval instead of starting a new card read. If the line was deleted in
+the meantime, re-charging is impossible (a new line has a new ref), so the
+notice says *"…mais la ligne a été supprimée : vérifiez la commande."* instead.
+The watcher stops as soon as a new Charge on that line starts. (A true remote-abort would
 require a new terminal-protocol message in `aslan-omni-api`; it does not exist
 yet — see [Known limitations](#14-known-limitations).)
 
@@ -611,18 +630,20 @@ sees the server's `timeout` status instead of giving up first.
 | *"Terminal occupé par un autre paiement"* (409 `terminal_busy`) | Another till's payment is running on the same terminal | Wait for it to finish, then retry. |
 | *"Terminal en reconnexion…"* (notification) | The terminal lost its stream a few seconds ago; the command is queued | Nothing — Odoo keeps polling. |
 | *"Le terminal n'a pas encore reçu la demande"* (notification) | The terminal has not acknowledged the command after 10 s | Check the terminal screen and connection; Odoo keeps polling. |
-| *"Résultat incertain…"* | The outcome is unknown (generic terminal error, or no final status at the end of polling) | Look at the terminal / NapsPay history first. Relaunching uses the same ref and never debits twice for a known approval. |
-| *"Le terminal a approuvé le paiement annulé…"* (notification) | The cashier cancelled in Odoo, but the customer paid on the terminal | Re-charge the same line: it attaches to the approval and records it, no second debit. |
+| *"Résultat incertain…"* | The outcome is unknown (generic terminal error, or no final status at the end of polling) | Look at the terminal / NapsPay history first, and only then relaunch. |
+| *"Le terminal a approuvé le paiement annulé…"* (notification) | The cashier cancelled in Odoo, but the customer paid on the terminal | Re-charge the same line: it attaches to the approval and records it. If the line was deleted, the notice says so — check the order by hand. |
+| *"Montant débité X ≠ montant de la ligne Y…"* | The terminal charged a different amount than the line now shows | Set the line to the charged amount and charge again: the existing approval is picked up. |
+| *"Ce paiement a déjà été annulé sur le terminal."* | The pay ref was reversed on the terminal | The line is not paid; take payment again on a new line. |
 | *"Résultat de l'annulation inconnu"* | A reversal got no final result | Check on the terminal whether the void went through before retrying. |
 | *"Délai expiré"* (408, or a `timeout` status while polling) | Customer never presented a card within 95 s | Retry — nothing was charged. |
 | *"Erreur serveur: ref already used"* (409) | The `ref` already belongs to another merchant or another terminal — e.g. the payment method was re-paired to a different terminal mid-payment | Start a new payment line (a new line gets a new ref) and charge again. |
-| *"Connexion au serveur Odoo perdue"* / *"Le serveur Odoo n'arrive pas à joindre Aslan"* | The POS could not reach Odoo / Odoo could not reach the Omni API, even after the recovery re-sends | Check connectivity, then re-click **Charge** on the same line — the stable ref prevents a double charge. |
+| *"Connexion au serveur Odoo perdue"* / *"Le serveur Odoo n'arrive pas à joindre Aslan"* | The POS could not reach Odoo / Odoo could not reach the Omni API, even after the recovery re-sends | Check connectivity and the terminal screen, then re-click **Charge** on the same line (same ref: the API returns a running or completed command instead of starting a new one). |
 | *"Aslan Omni API URL must use HTTPS"* | The configured URL is `http://` or malformed | Fix the **Aslan Omni API URL** to an `https://` endpoint. |
 | Merchant slip does not print | **Print merchant card receipt** is off on the payment method, the POS session was opened before it was switched on, or this line's merchant copy already printed (once per payment line) | Tick the setting, close and reopen the POS session. |
 | N° Commerçant / N° Terminal / N° Transaction missing from the slip | The Omni API or terminal app version does not send `acquirerMerchantId` / `acquirerTerminalId` / `transactionNumber` | Update the terminal app / API; the rows are simply omitted until then. |
 | Pairing fails with *"Pairing code not found or expired"* | The 8-char code expired (120 s) or was mistyped | Generate a fresh code on the terminal and re-enter promptly. |
 | *"Impossible d'annuler : STAN absent"* on reverse | The payment line has no stored STAN | Only approved Aslan Omni payments carry a STAN; you cannot reverse a line that was never approved through this flow. |
-| Network dropped mid-payment, cashier unsure if it charged | Covered by the recovery loop (§8.2) | Re-click **Charge** on the *same* line — the stable ref prevents a double charge; the server returns the real result. |
+| Network dropped mid-payment, cashier unsure if it charged | Covered by the recovery loop (§8.2) | Check the terminal, then re-click **Charge** on the *same* line — the server returns the real result for that ref. |
 | Asset bundle fails to compile / till won't open | A JS import path or registry key was changed and no longer matches core Odoo 20 | Re-check against [§10](#10-where-odoo-20-bends-this-add-ons-design-read-if-youre-new-to-odoo-pos-internals); confirm with `odoo -i point_of_sale,aslan_omni_payment --stop-after-init` that the module still installs cleanly. |
 
 For deeper debugging, open the browser console: all failures surface through
