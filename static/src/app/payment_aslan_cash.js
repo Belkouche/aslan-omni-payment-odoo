@@ -36,18 +36,15 @@ const TIP_PRESETS_MAD = [0, 5, 10, 20];
  */
 class CashTipPicker extends Component {
     static template = 'aslan_omni_payment.CashTipPicker';
-    static props = {
-        close: { type: Function, optional: true },
-        baseAmount: Number,
-        formatCurrency: Function,
-        onConfirm: Function,
-    };
+
+    // In OWL 3, `static props` is silently ignored (see README §10) — props
+    // validation would need `useProps(...)` with a typed schema. We skip
+    // runtime validation entirely: the one call site (sendPaymentRequest
+    // below) controls the props shape, so the extra schema buys nothing.
 
     setup() {
-        // Reactive state via OWL 3's `proxy` — OWL has moved away from useState.
-        // See the card pairing widget (aslan_omni_pairing_widget.js) for the same
-        // pattern. We don't need to import proxy here since this component only
-        // mutates state inside event handlers that trigger renders directly.
+        // We call this.render() from event handlers rather than relying on
+        // reactive state, so plain object properties are enough.
         this.state = { selectedCents: 0, customText: '' };
         this.presets = TIP_PRESETS_MAD;
     }
