@@ -6,8 +6,9 @@ class IrUiView(models.Model):
 
     @api.model
     def _get_xml_ids_to_load(self):
-        # Ship the card slip templates to the POS client so it can render them.
+        # Ship the card + cash slip templates to the POS client so it can render them.
         return super()._get_xml_ids_to_load() + [
             'aslan_omni_payment.card_slip_body',
             'aslan_omni_payment.card_slip',
+            'aslan_omni_payment.cash_slip_body',
         ]
