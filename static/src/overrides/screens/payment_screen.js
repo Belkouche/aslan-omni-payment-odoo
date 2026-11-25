@@ -6,9 +6,12 @@ import { patch } from '@web/core/utils/patch';
 patch(PaymentScreen.prototype, {
     /**
      * Hide cash (Cashmatic) payment methods whose paired terminal reported
-     * `hasRecycler: false` on session start. The flag is set by
-     * overrides/app/pos_store.js and never leaves the client — the server
-     * still validates on /cloud/pay, so this is UX, not security.
+     * `hasRecycler: false` on session start. The hidden state lives on
+     * `this.pos.aslanCashHiddenMap` (a reactive Map keyed by method id, set
+     * by overrides/app/pos_store.js) and never leaves the client — the server
+     * still validates on /cloud/pay, so this is UX, not security. Reading the
+     * map inside this getter subscribes the PaymentScreen's render to it, so
+     * a later probe result flips the UI without a reopen.
      *
      * Defensive: the base `payment_methods_from_config` is a getter on
      * recent Odoo builds but has shifted shape across 15 / 17 / 20
@@ -34,7 +37,8 @@ patch(PaymentScreen.prototype, {
             );
             base = [];
         }
-        const filtered = base.filter(m => !m?.aslanCashHiddenByCapability);
+        const hiddenMap = this.pos?.aslanCashHiddenMap;
+        const filtered = base.filter(m => !(hiddenMap?.get(m?.id) ?? false));
         if (filtered.length === 0 && base.length > 0) {
             console.error(
                 '[aslan_omni_payment] capability filter emptied the payment methods list ' +
@@ -50,10 +54,10 @@ patch(PaymentScreen.prototype, {
 //
 // Tests would live under `static/tests/payment_screen_patch_tests.js` and
 // cover three cases against the patched getter:
-//   1. super returns the v17 shape [{id:1}, {id:2, aslanCashHiddenByCapability:true}]
-//      → filtered list contains only {id:1}.
+//   1. super returns the v17 shape [{id:1}, {id:2}] and the pos store's
+//      aslanCashHiddenMap has {2: true} → filtered list contains only {id:1}.
 //   2. super returns undefined (version drift) → returns [] and logs a warning.
-//   3. super returns [{id:1, aslanCashHiddenByCapability:true}] (every method
-//      hidden) → fails open, returns the raw super array unchanged.
+//   3. super returns [{id:1}] and the map has {1: true} (every method hidden)
+//      → fails open, returns the raw super array unchanged.
 // The Odoo POS QUnit harness isn't wired into this addon yet; leaving this
 // as an explicit TODO rather than adding half a test runner.

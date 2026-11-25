@@ -498,26 +498,6 @@ export class PaymentAslanCash extends PaymentInterface {
         return false;
     }
 
-    // --- Capabilities gating (POS start-up) ---------------------------------
-
-    /**
-     * Called by the POS pre-session hook (see static/src/overrides/app/pos_store.js)
-     * to probe whether this method's paired terminal has an online recycler.
-     * Flips a transient flag the UI checks before showing the method.
-     * On any error we default to "show it" — the server will still reject with a
-     * clear error if the recycler isn't actually available.
-     */
-    async probeCapability(method) {
-        const res = await this._callOmni('aslan_cash_device_capabilities', []);
-        if (res.error || res.httpStatus !== 200) {
-            // Default optimistic; a clean error at charge time is better than a
-            // silently missing payment method.
-            method.aslanCashHiddenByCapability = false;
-            return;
-        }
-        method.aslanCashHiddenByCapability = !res.body?.hasRecycler;
-    }
-
     // --- UI helpers ---------------------------------------------------------
 
     /** Returns null if the cashier cancelled the dialog, or the tip in cents. */
@@ -562,15 +542,40 @@ export class PaymentAslanCash extends PaymentInterface {
         return name.split(/\s+/).map(p => p[0] || '').join('').slice(0, 3).toUpperCase();
     }
 
-    /** Log a note on the pos.order for shift reconciliation. Best-effort. */
+    /** Log a note on the pos.order for shift reconciliation. Best-effort.
+     *
+     * Mutates `order.internal_note` locally (so the on-screen ticket and the
+     * printed receipt reflect the acknowledgement immediately) and fires a
+     * matching write to the server (so the audit trail survives a session
+     * reload / BO lookup). The server write is fire-and-forget: the cashier
+     * flow must not block on it, and a failure is non-fatal — the receipt
+     * still carries the same info and the server stays authoritative only
+     * after sync, not during the live flow.
+     */
     _logCashierAcknowledgement(line, msg) {
         const order = line.pos_order_id;
+        if (!order) return;
         try {
             // Odoo 20 stores cashier notes on the order via internal_note; append.
-            if (order) {
-                const prev = order.internal_note || '';
-                const entry = `[${new Date().toISOString().slice(0, 16).replace('T', ' ')}] ${this._cashierInitials()}: ${msg}`;
-                order.internal_note = prev ? `${prev}\n${entry}` : entry;
+            const prev = order.internal_note || '';
+            const entry = `[${new Date().toISOString().slice(0, 16).replace('T', ' ')}] ${this._cashierInitials()}: ${msg}`;
+            const next = prev ? `${prev}\n${entry}` : entry;
+            order.internal_note = next;
+            // Fire-and-forget server write so the audit trail reaches the BO.
+            // Only issue it for orders that have already been persisted (have
+            // a numeric server id); draft orders will carry the note along
+            // when they first sync.
+            if (typeof order.id === 'number' && order.id > 0) {
+                Promise.resolve(
+                    this.env.services.orm.silent.write(
+                        'pos.order', [order.id], { internal_note: next },
+                    ),
+                ).catch(err => {
+                    console.warn(
+                        '[aslan_omni_payment] failed to persist cashier acknowledgement note:',
+                        err?.message || err,
+                    );
+                });
             }
         } catch (_e) {
             // Non-fatal: the receipt still carries the same info.

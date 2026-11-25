@@ -2,6 +2,7 @@
 
 import { PosStore } from '@point_of_sale/app/store/pos_store';
 import { patch } from '@web/core/utils/patch';
+import { reactive } from '@odoo/owl';
 
 // Per-probe timeout. Short enough that N recyclers x PROBE_TIMEOUT_MS
 // never gates the cashier opening the till, long enough that a real
@@ -12,8 +13,14 @@ patch(PosStore.prototype, {
     /**
      * After the POS session loads, probe each aslan_cash payment method for
      * recycler availability. A method with no online recycler (or on a VPS
-     * terminal that can't broker a recycler) gets `aslanCashHiddenByCapability`
-     * set, which the payment screen checks before rendering the button.
+     * terminal that can't broker a recycler) is marked hidden in
+     * `aslanCashHiddenMap` (keyed by method id), which the payment screen
+     * consults before rendering the button.
+     *
+     * The map is a reactive() instance — an ad-hoc JS property on the record
+     * would be clobbered on model re-hydration and OWL 3 would not re-render
+     * the PaymentScreen when a flag flips. Reading the map inside the screen's
+     * getter subscribes it to this store, so a later set() triggers a redraw.
      *
      * This is a one-shot probe at session start — the cashier reopens the
      * session if the recycler comes online later. Probes run in parallel
@@ -22,6 +29,10 @@ patch(PosStore.prototype, {
      */
     async afterProcessServerData(loadedData) {
         const res = await super.afterProcessServerData(...arguments);
+        // Create the reactive map lazily on first session load.
+        if (!this.aslanCashHiddenMap) {
+            this.aslanCashHiddenMap = reactive(new Map());
+        }
         try {
             await this._probeAslanCashCapabilities();
         } catch (_e) {
@@ -41,7 +52,7 @@ patch(PosStore.prototype, {
         // reports hasRecycler === false. Timeouts / RPC errors therefore keep
         // the method visible, matching the fail-open stance in payment_screen.
         for (const method of methods) {
-            method.aslanCashHiddenByCapability = false;
+            this.aslanCashHiddenMap.set(method.id, false);
         }
         await Promise.allSettled(
             methods.map(method => this._probeOne(method, PROBE_TIMEOUT_MS)),
@@ -62,7 +73,7 @@ patch(PosStore.prototype, {
             );
             const res = await Promise.race([call, timeout]);
             if (res && !res.error && res.httpStatus === 200) {
-                method.aslanCashHiddenByCapability = !res.body?.hasRecycler;
+                this.aslanCashHiddenMap.set(method.id, !res.body?.hasRecycler);
             }
         } catch (err) {
             // Timeout or RPC error: keep the method visible (already set above).

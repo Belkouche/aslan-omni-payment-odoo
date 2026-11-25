@@ -78,8 +78,20 @@ class PosPaymentMethod(models.Model):
         params += [
             'aslan_omni_device_id',
             'aslan_omni_print_merchant_receipt',
-            'aslan_cash_tips_enabled',
         ]
+        # Scope boundary: everything below is aslan_cash-only — the base
+        # _load_pos_data_fields contract returns a flat field list per model,
+        # so there is no per-record scoping hook. We mitigate by only adding
+        # the aslan_cash_* fields when this POS config actually has an
+        # aslan_cash payment method. A future aslan_cash-only flag added to
+        # this block therefore inherits the scoping; one added to the block
+        # above would leak to card/stay/etc., so DO NOT mix them.
+        if config and any(
+            m.payment_provider == 'aslan_cash' for m in config.payment_method_ids
+        ):
+            params += [
+                'aslan_cash_tips_enabled',
+            ]
         return params
 
     def aslan_omni_send_payment(self, ref, amount_cents, cashier_id=None, till_id=None, description=None,
