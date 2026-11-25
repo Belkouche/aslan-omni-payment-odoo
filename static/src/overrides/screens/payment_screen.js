@@ -37,8 +37,13 @@ patch(PaymentScreen.prototype, {
             );
             base = [];
         }
-        const hiddenMap = this.pos?.aslanCashHiddenMap;
-        const filtered = base.filter(m => !(hiddenMap?.get(m?.id) ?? false));
+        // aslanCashHiddenMap is a plain object keyed by method id (not a Map):
+        // OWL 3 as shipped with Odoo 20 does not export `reactive`, and
+        // Map.get() tracking inside the store's proxy is unreliable. The POS
+        // store is itself a proxied instance, so reading an object property
+        // here subscribes this render to it.
+        const hiddenMap = this.pos?.aslanCashHiddenMap || {};
+        const filtered = base.filter(m => !hiddenMap[m?.id]);
         if (filtered.length === 0 && base.length > 0) {
             console.error(
                 '[aslan_omni_payment] capability filter emptied the payment methods list ' +

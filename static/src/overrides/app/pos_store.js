@@ -2,7 +2,6 @@
 
 import { PosStore } from '@point_of_sale/app/store/pos_store';
 import { patch } from '@web/core/utils/patch';
-import { reactive } from '@odoo/owl';
 
 // Per-probe timeout. Short enough that N recyclers x PROBE_TIMEOUT_MS
 // never gates the cashier opening the till, long enough that a real
@@ -14,13 +13,21 @@ patch(PosStore.prototype, {
      * After the POS session loads, probe each aslan_cash payment method for
      * recycler availability. A method with no online recycler (or on a VPS
      * terminal that can't broker a recycler) is marked hidden in
-     * `aslanCashHiddenMap` (keyed by method id), which the payment screen
-     * consults before rendering the button.
+     * `aslanCashHiddenMap` (a plain object keyed by method id), which the
+     * payment screen consults before rendering the button.
      *
-     * The map is a reactive() instance — an ad-hoc JS property on the record
-     * would be clobbered on model re-hydration and OWL 3 would not re-render
-     * the PaymentScreen when a flag flips. Reading the map inside the screen's
-     * getter subscribes it to this store, so a later set() triggers a redraw.
+     * We use a plain object rather than a Map or a `reactive(...)`-wrapped
+     * container because:
+     *   - Upstream OWL 3 as shipped with Odoo 20 does NOT export `reactive`
+     *     from `@odoo/owl` — the earlier `import { reactive } from '@odoo/owl'`
+     *     threw at module load. Only `proxy` is available, and Map/Set
+     *     tracking inside proxies is historically version-dependent.
+     *   - The PosStore itself is wrapped in `proxy(this)` by Odoo 20, so any
+     *     plain data assigned to `this.*` is already observable: the
+     *     PaymentScreen render that reads `this.pos.aslanCashHiddenMap[id]`
+     *     subscribes to the underlying proxy and re-renders when we re-assign
+     *     the map (we spread to a new object on each set so the top-level
+     *     reference changes — the safest publish signal).
      *
      * This is a one-shot probe at session start — the cashier reopens the
      * session if the recycler comes online later. Probes run in parallel
@@ -29,9 +36,9 @@ patch(PosStore.prototype, {
      */
     async afterProcessServerData(loadedData) {
         const res = await super.afterProcessServerData(...arguments);
-        // Create the reactive map lazily on first session load.
+        // Create the hidden-flags map lazily on first session load.
         if (!this.aslanCashHiddenMap) {
-            this.aslanCashHiddenMap = reactive(new Map());
+            this.aslanCashHiddenMap = {};
         }
         try {
             await this._probeAslanCashCapabilities();
@@ -51,9 +58,11 @@ patch(PosStore.prototype, {
         // Default optimistic: method stays visible unless a probe positively
         // reports hasRecycler === false. Timeouts / RPC errors therefore keep
         // the method visible, matching the fail-open stance in payment_screen.
+        const seeded = { ...this.aslanCashHiddenMap };
         for (const method of methods) {
-            this.aslanCashHiddenMap.set(method.id, false);
+            seeded[method.id] = false;
         }
+        this.aslanCashHiddenMap = seeded;
         await Promise.allSettled(
             methods.map(method => this._probeOne(method, PROBE_TIMEOUT_MS)),
         );
@@ -73,7 +82,14 @@ patch(PosStore.prototype, {
             );
             const res = await Promise.race([call, timeout]);
             if (res && !res.error && res.httpStatus === 200) {
-                this.aslanCashHiddenMap.set(method.id, !res.body?.hasRecycler);
+                // Reassign the whole object so the top-level reference changes,
+                // which is the reliable way to publish an update through the
+                // store's proxy (keyed writes on the same object are observed
+                // on OWL 3 but Map.set() is not).
+                this.aslanCashHiddenMap = {
+                    ...this.aslanCashHiddenMap,
+                    [method.id]: !res.body?.hasRecycler,
+                };
             }
         } catch (err) {
             // Timeout or RPC error: keep the method visible (already set above).
