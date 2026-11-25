@@ -26,6 +26,10 @@ class TestAslanCashPaymentMethod(TransactionCase):
             })
         cls.method = cls.env['pos.payment.method'].create({
             'name': 'Cashmatic test',
+            # `type` is a required Selection on pos.payment.method with no
+            # stored compute or default — core expects callers to set it at
+            # create time (same shape as the core pos_cashmatic tests).
+            'type': 'cash',
             'journal_id': journal.id,
             'payment_provider': 'aslan_cash',
             'aslan_omni_api_url': 'https://api.aslanpay.ma',
@@ -69,10 +73,19 @@ class TestAslanCashPaymentMethod(TransactionCase):
             self.method.aslan_cash_send_payment(
                 ref='ODOC-xyz', amount_cents=1000, tips_amount_cents=0,
             )
-        # No tip -> key dropped; no cashier/till -> keys dropped (payload sanitiser).
-        self.assertNotIn('tipsAmountCents', captured['payload'])
-        self.assertNotIn('cashierId', captured['payload'])
-        self.assertNotIn('customDisplayMessage', captured['payload'])
+        # aslan_cash_send_payment emits None for zero-tip / unset fields and
+        # relies on _aslan_omni_request's `{k: v for ... if v is not None}`
+        # sanitiser to strip them before they reach the wire. The stub above
+        # captures the payload BEFORE that sanitiser, so assert the pre-strip
+        # contract: zero tip and unset optional fields produce None values,
+        # not zeros or empty strings. If anything flipped to a falsy non-None
+        # value (0, "", False) the sanitiser would forward it.
+        p = captured['payload']
+        self.assertIsNone(p.get('tipsAmountCents'))
+        self.assertIsNone(p.get('cashierId'))
+        self.assertIsNone(p.get('customDisplayMessage'))
+        self.assertIsNone(p.get('tillId'))
+        self.assertIsNone(p.get('description'))
 
     # --- aslan_cash_cancel ---
 

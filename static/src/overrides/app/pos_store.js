@@ -46,6 +46,25 @@ patch(PosStore.prototype, {
             // Non-fatal: default to showing the method and let the server
             // reject the payment with a clean error if something is off.
         }
+        // Shape guard (issue #10 Option A): if anything above left the map in
+        // a non-object shape (e.g. OWL reactivity semantics shifted again and
+        // our top-level reassignment produced a Proxy that no longer reports
+        // `typeof === 'object'`, or a defensive refactor accidentally set it
+        // to a Map again), log loudly and reset so PaymentScreen's `[id]`
+        // lookup never throws. The previous try/catch would silently swallow
+        // this class of regression — we trade silence for a console.error.
+        const map = this.aslanCashHiddenMap;
+        if (map === null || typeof map !== 'object' || Array.isArray(map)
+                || typeof map.get === 'function') {
+            console.error(
+                '[aslan_omni_payment] aslanCashHiddenMap in unexpected shape ' +
+                `(${map === null ? 'null' : typeof map}` +
+                `${Array.isArray(map) ? '/array' : ''}` +
+                `${typeof map?.get === 'function' ? '/Map-like' : ''}); ` +
+                'resetting to {} and failing open.',
+            );
+            this.aslanCashHiddenMap = {};
+        }
         return res;
     },
 

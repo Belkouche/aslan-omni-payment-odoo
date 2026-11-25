@@ -5,6 +5,41 @@ import { patch } from '@web/core/utils/patch';
 
 patch(PaymentScreen.prototype, {
     /**
+     * Force-done hook for stuck aslan_cash lines (issue #8).
+     *
+     * When the cashier marks a stuck cash line as done manually (recycler
+     * offline, broker unreachable, SSE drops mid-command), we fire a
+     * server-side cancel so the broker stops pushing the command and the
+     * Cashmatic releases its running session. Fire-and-forget — the cashier
+     * is already past the line. Mirrors the pattern that core pos_cashmatic
+     * uses for its own "cancelCurrentPayment" on force-done.
+     *
+     * Card (aslan_omni) does NOT need this: the card terminal owns its own
+     * cancel/timeout, and aslan_omni_send_reversal takes a STAN that only
+     * exists after an approval — not during a stuck "waiting" state. If the
+     * card is force-done mid-command the terminal times out on its own.
+     */
+    async sendForceDone(line) {
+        const method = line.payment_method_id;
+        if (method?.payment_provider === 'aslan_cash') {
+            const commandId = line.uiState?.aslanCashCommandId;
+            if (commandId && this.env?.services?.orm?.silent) {
+                Promise.resolve(
+                    this.env.services.orm.silent.call(
+                        'pos.payment.method', 'aslan_cash_cancel',
+                        [[method.id], commandId],
+                    ),
+                ).catch(err => {
+                    console.warn(
+                        '[aslan_omni_payment] sendForceDone cash cancel failed:',
+                        err?.message || err,
+                    );
+                });
+            }
+        }
+        return super.sendForceDone(...arguments);
+    },
+    /**
      * Hide cash (Cashmatic) payment methods whose paired terminal reported
      * `hasRecycler: false` on session start. The hidden state lives on
      * `this.pos.aslanCashHiddenMap` (a reactive Map keyed by method id, set

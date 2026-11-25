@@ -19,6 +19,16 @@ class PosPaymentMethod(models.Model):
     def _get_terminal_provider_selection(self):
         return super()._get_terminal_provider_selection() + [
             ('aslan_omni', 'Aslan Omni (card)'),
+        ]
+
+    def _get_cash_machine_selection(self):
+        # aslan_cash is a cash recycler, not a card terminal. Registering it
+        # here lets core's _compute_payment_method_type set
+        # payment_method_type = 'cash_machine' automatically, so this method
+        # groups with Cashmatic/Cashdro/Glory in the admin UI and gets picked
+        # up by session-close reconciliation, sale-details reports, and any
+        # future cash-machine-specific core logic (see issue #7).
+        return super()._get_cash_machine_selection() + [
             ('aslan_cash', 'Aslan Omni (Cashmatic cash recycler)'),
         ]
 

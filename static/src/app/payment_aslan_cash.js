@@ -3,7 +3,7 @@
 import { PaymentInterface } from '@point_of_sale/app/utils/payment/payment_interface';
 import { registry } from '@web/core/registry';
 import { AlertDialog, ConfirmationDialog } from '@web/core/confirmation_dialog/confirmation_dialog';
-import { Component } from '@odoo/owl';
+import { Component, proxy } from '@odoo/owl';
 
 // Cash commands have a 300 s TTL server-side (5 min) — cashiers take longer than
 // card auth. Poll a little past that so the last poll sees the server's timeout.
@@ -27,32 +27,31 @@ const MSG_NO_REVERSAL    = "L'annulation d'un paiement en espèces déjà remis 
 const TIP_PRESETS_MAD = [0, 5, 10, 20];
 
 /**
- * Modal that collects a tip amount from the cashier. The customer has already
- * agreed to leave a tip, verbally or on the ticket; the cashier picks it on the
- * POS and it is added to the cash amount requested from the recycler.
+ * Body component embedded in a ConfirmationDialog to collect a tip amount
+ * (issue #10 Option C). Replaces the previous bespoke CashTipPicker modal:
+ * the dialog outer frame, OK/Cancel buttons, and lifecycle come from core's
+ * ConfirmationDialog, so we only own the body — fewer custom patterns to
+ * maintain across OWL 3 revisions.
  *
- * Template is registered as 'aslan_omni_payment.CashTipPicker' in
- * aslan_cash_tip_picker.xml (QWeb, loaded with the POS asset bundle).
+ * Template is registered as 'aslan_omni_payment.CashTipPickerBody' in
+ * aslan_cash_tip_picker.xml.
+ *
+ * The body uses OWL 3 `proxy()` state so pickPreset / onCustomInput update
+ * the preview strong-tag without an explicit this.render() — matching what
+ * core pos_cashmatic does for its cash-progress state.
  */
-class CashTipPicker extends Component {
-    static template = 'aslan_omni_payment.CashTipPicker';
-
-    // In OWL 3, `static props` is silently ignored (see README §10) — props
-    // validation would need `useProps(...)` with a typed schema. We skip
-    // runtime validation entirely: the one call site (sendPaymentRequest
-    // below) controls the props shape, so the extra schema buys nothing.
+class CashTipPickerBody extends Component {
+    static template = 'aslan_omni_payment.CashTipPickerBody';
 
     setup() {
-        // We call this.render() from event handlers rather than relying on
-        // reactive state, so plain object properties are enough.
-        this.state = { selectedCents: 0, customText: '' };
+        this.state = proxy({ selectedCents: 0, customText: '' });
         this.presets = TIP_PRESETS_MAD;
     }
 
     pickPreset(mad) {
         this.state.selectedCents = Math.round(mad * 100);
         this.state.customText = '';
-        this.render();
+        this._publish();
     }
 
     onCustomInput(ev) {
@@ -61,7 +60,22 @@ class CashTipPicker extends Component {
         const n = Number.parseFloat(raw);
         if (Number.isFinite(n) && n >= 0) {
             this.state.selectedCents = Math.round(n * 100);
-            this.render();
+        } else if (raw === '') {
+            // Empty input while typing: keep the preset selection active, do
+            // not zero out (fixes the "typing a custom amount wipes the 10 MAD
+            // button then can't recover without a second click" UX).
+        }
+        this._publish();
+    }
+
+    /**
+     * Mirror the current selection into the ref-shaped prop the caller owns,
+     * so ConfirmationDialog's confirm handler reads the latest value without
+     * needing a message bus or imperative close call from here.
+     */
+    _publish() {
+        if (this.props.pickedRef) {
+            this.props.pickedRef.cents = this.state.selectedCents;
         }
     }
 
@@ -70,18 +84,13 @@ class CashTipPicker extends Component {
     }
 
     isPresetActive(mad) {
-        return this.state.selectedCents === Math.round(mad * 100);
+        return this.state.selectedCents === Math.round(mad * 100) && !this.state.customText;
     }
 
-    confirm() {
-        this.props.onConfirm(this.state.selectedCents);
-        this.props.close?.();
-    }
-
-    cancel() {
-        this.props.onConfirm(null);
-        this.props.close?.();
-    }
+    // ConfirmationDialog owns its own OK/Cancel buttons (via its `confirm` /
+    // `cancel` props passed below in _askForTip). The body only publishes the
+    // current selection via a ref-shaped prop so the caller can read it when
+    // confirm fires. No lifecycle methods here — the dialog closes the body.
 }
 
 export class PaymentAslanCash extends PaymentInterface {
@@ -91,6 +100,32 @@ export class PaymentAslanCash extends PaymentInterface {
         // Keyed by line.uuid: the in-flight session per payment line. Cancel
         // marks it cancelled and wakes the poll loop.
         this._sessions = new Map();
+        // OWL 3 reactive state for live progress on the payment screen (issue
+        // #9). Mirrors core pos_cashmatic's CashmaticService.state shape —
+        // core's base PaymentScreenPaymentLines template renders
+        // "Cash inserted" automatically for any payment_interface exposing
+        // `amountInserted`, and our own template extension adds the
+        // "Cash dispensed" line.
+        //
+        // `proxy()` is exported by @odoo/owl on Odoo 20.0 and 20.1 (verified
+        // against the shipped owl.js export block — unlike `reactive`, which
+        // is not exported and broke 20.1a1 in commit 718ee52).
+        this.state = proxy({ insertedCents: 0, dispensedCents: 0 });
+    }
+
+    /**
+     * Amount in the POS currency (not cents) that the customer has fed into
+     * the recycler so far on the active payment. Read by core's base
+     * PaymentScreenPaymentLines template when state.id == 'waiting' to render
+     * the "Cash inserted" line, and by our own template extension for
+     * dispensed change. Updated by the /status poll loop.
+     */
+    get amountInserted() {
+        return this.state.insertedCents / 100;
+    }
+
+    get amountDispensed() {
+        return this.state.dispensedCents / 100;
     }
 
     /**
@@ -112,6 +147,12 @@ export class PaymentAslanCash extends PaymentInterface {
      */
     async sendPaymentRequest(line) {
         await super.sendPaymentRequest(...arguments);
+
+        // Reset live progress state so the next payment line starts at 0
+        // (issue #9). The PaymentInterface instance is shared across every
+        // line that uses this method.
+        this.state.insertedCents = 0;
+        this.state.dispensedCents = 0;
 
         if (!line.payment_method_id.aslan_omni_device_id) {
             this._showError(MSG_NOT_CONFIGURED);
@@ -327,6 +368,16 @@ export class PaymentAslanCash extends PaymentInterface {
             if (res.error || res.httpStatus !== 200) continue;
             const data = res.body;
 
+            // Publish live progress for the payment-line template (issue #9).
+            // Writing to the proxy() state is picked up by the OWL template
+            // without any explicit render call.
+            if (Number.isInteger(data.insertedCents)) {
+                this.state.insertedCents = data.insertedCents;
+            }
+            if (Number.isInteger(data.dispensedCents)) {
+                this.state.dispensedCents = data.dispensedCents;
+            }
+
             if (data.status === 'completed') {
                 return this._handleResult({ ...data, status: data.resultStatus }, line, session);
             }
@@ -500,16 +551,36 @@ export class PaymentAslanCash extends PaymentInterface {
 
     // --- UI helpers ---------------------------------------------------------
 
-    /** Returns null if the cashier cancelled the dialog, or the tip in cents. */
+    /**
+     * Returns null if the cashier cancelled the dialog, or the tip in cents.
+     *
+     * Uses core's ConfirmationDialog with a small body component (issue #10
+     * Option C). The body publishes the picked amount into a ref-shaped
+     * object that _askForTip owns, so confirm reads the final value without
+     * extra plumbing. Matches the pattern core uses for custom-body dialogs
+     * (see e.g. point_of_sale ClosingControlPopup).
+     */
     _askForTip(baseAmount) {
+        const pickedRef = { cents: 0 };
         return new Promise(resolve => {
             let resolved = false;
-            this.dialog.add(CashTipPicker, {
-                baseAmount,
-                formatCurrency: (v) => this.pos.formatCurrency(v),
-                onConfirm: (cents) => {
+            this.dialog.add(ConfirmationDialog, {
+                title: 'Pourboire',
+                body: CashTipPickerBody,
+                bodyComponentProps: {
+                    baseAmount,
+                    formatCurrency: (v) => this.pos.formatCurrency(v),
+                    pickedRef,
+                },
+                confirmLabel: 'Démarrer le paiement',
+                cancelLabel: 'Annuler',
+                confirm: () => {
                     resolved = true;
-                    resolve(cents);
+                    resolve(pickedRef.cents);
+                },
+                cancel: () => {
+                    resolved = true;
+                    resolve(null);
                 },
             }, {
                 onClose: () => { if (!resolved) resolve(null); },
