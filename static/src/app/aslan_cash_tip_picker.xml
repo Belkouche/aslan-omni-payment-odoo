@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<templates id="template" xml:space="preserve">
+    <!--
+        Body-only template for CashTipPickerBody (issue #10 Option C).
+        The surrounding modal frame, title bar and OK/Cancel buttons come
+        from core's ConfirmationDialog — we only own the content.
+    -->
+    <t t-name="aslan_omni_payment.CashTipPickerBody">
+        <div class="aslan-cash-tip-picker">
+            <p>
+                Montant de la vente : <strong t-out="this.props.formatCurrency(this.props.baseAmount)"/>
+            </p>
+            <div class="d-flex flex-wrap gap-2 mb-3">
+                <t t-foreach="this.presets" t-as="tip" t-key="tip">
+                    <button type="button" class="btn"
+                            t-att-class="this.isPresetActive(tip) ? 'btn-primary' : 'btn-outline-primary'"
+                            t-on-click="() => this.pickPreset(tip)">
+                        <t t-if="tip === 0">Pas de pourboire</t>
+                        <t t-else=""><t t-out="tip"/> MAD</t>
+                    </button>
+                </t>
+            </div>
+            <div class="mb-2">
+                <label class="form-label">Autre montant (MAD)</label>
+                <input type="number" min="0" step="0.5" class="form-control"
+                       t-att-value="this.state.customText"
+                       t-on-input="this.onCustomInput"
+                       placeholder="0.00"/>
+            </div>
+            <p class="mt-3">
+                Total à encaisser (vente + pourboire) :
+                <strong t-out="this.props.formatCurrency(this.totalWithTipCents / 100)"/>
+            </p>
+        </div>
+    </t>
+</templates>

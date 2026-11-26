@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<odoo>
+    <data>
+        <!-- Cash slip content for one Aslan Cash (Cashmatic) payment. Expects
+             `payment` with an `aslan_cash_result` dict (see payment_aslan_cash.js
+             _handleResult). -->
+        <template id="aslan_omni_payment.cash_slip_body">
+            <div class="aslan-omni-cash-slip">
+                <div class="text-large text-center text-bold" t-out="payment['aslan_cash_result'].get('companyName') or ''" />
+                <div class="text-center mb-2">
+                    <t t-out="payment['aslan_cash_result'].get('txDate') or ''" /> <t t-out="payment['aslan_cash_result'].get('txTime') or ''" />
+                </div>
+                <div class="text-large text-center text-bold mb-2">PAIEMENT EN ESPECES</div>
+                <table class="w-100 mb-2">
+                    <tbody>
+                        <tr>
+                            <td class="text-start">Montant demandé</td>
+                            <td class="text-end" t-out="payment['aslan_cash_result'].get('requested') or ''" />
+                        </tr>
+                        <tr t-if="payment['aslan_cash_result'].get('tipsAmount')">
+                            <td class="text-start">Pourboire</td>
+                            <td class="text-end" t-out="payment['aslan_cash_result']['tipsAmount']" />
+                        </tr>
+                        <tr t-if="payment['aslan_cash_result'].get('inserted')">
+                            <td class="text-start">Argent inséré</td>
+                            <td class="text-end" t-out="payment['aslan_cash_result']['inserted']" />
+                        </tr>
+                        <tr t-if="payment['aslan_cash_result'].get('dispensed')">
+                            <td class="text-start">Monnaie rendue</td>
+                            <td class="text-end" t-out="payment['aslan_cash_result']['dispensed']" />
+                        </tr>
+                        <tr t-if="payment['aslan_cash_result'].get('owed')">
+                            <td class="text-start text-bold">Monnaie due (caisse)</td>
+                            <td class="text-end text-bold">
+                                <t t-out="payment['aslan_cash_result']['owed']" />
+                                <t t-if="payment['aslan_cash_result'].get('cashierInitials')"> — <t t-out="payment['aslan_cash_result']['cashierInitials']" /></t>
+                            </td>
+                        </tr>
+                        <tr t-if="payment['aslan_cash_result'].get('cashmaticTransactionId')">
+                            <td class="text-start">N° Transaction</td>
+                            <td class="text-end" t-out="payment['aslan_cash_result']['cashmaticTransactionId']" />
+                        </tr>
+                        <tr t-if="payment['aslan_cash_result'].get('recyclerId')">
+                            <td class="text-start">Recycleur</td>
+                            <td class="text-end" t-out="payment['aslan_cash_result']['recyclerId']" />
+                        </tr>
+                        <tr t-if="payment['aslan_cash_result'].get('orderName')">
+                            <td class="text-start">Commande</td>
+                            <td class="text-end" t-out="payment['aslan_cash_result']['orderName']" />
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="text-large text-center text-bold">
+                    <t t-if="payment['aslan_cash_result'].get('status') == 'partial'">PAIEMENT PARTIEL - MONNAIE A RENDRE</t>
+                    <t t-else="">PAIEMENT APPROUVE</t>
+                </div>
+            </div>
+        </template>
+    </data>
+</odoo>

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Live cash-dispensed display on the payment line (issue #9).
+    Core's base PaymentScreenPaymentLines template already renders
+    "Cash inserted" when `payment_interface?.amountInserted != null`, so we
+    get that line for free from PaymentAslanCash.amountInserted. The
+    "Cash dispensed" line below is Cashmatic-specific — core pos_cashmatic
+    adds the same extension for its own provider, keyed on
+    payment_provider === 'cashmatic'.
+-->
+<templates id="template" xml:space="preserve">
+    <t t-inherit="point_of_sale.PaymentScreenPaymentLines" t-inherit-mode="extension">
+        <xpath expr="//div[hasclass('paymentline_status_actions')]" position="before">
+            <!--
+                "Argent inséré" — mirrors core pos_cashmatic's Cash-inserted
+                row. We add our own instead of relying on core's base-template
+                row, because aslan sets setPaymentStatus('waitingCard') (the
+                only waiting label that keeps the correct spinner/title), and
+                core's base row is gated on state.id == 'waiting' which maps
+                from 'waiting' (not 'waitingCard'). Gate on provider + amount
+                so the row only appears while there's progress to show.
+            -->
+            <div t-if="line.payment_method_id.payment_provider === 'aslan_cash' and line.payment_method_id.payment_interface?.amountInserted > 0"
+                 class="d-flex align-items-center justify-content-between pb-3 px-4 fs-4">
+                <span>Argent inséré</span>
+                <span t-out="this.pos.formatCurrency(line.payment_method_id.payment_interface.amountInserted)"/>
+            </div>
+            <div t-if="line.payment_method_id.payment_provider === 'aslan_cash' and line.payment_method_id.payment_interface?.amountDispensed > 0"
+                 class="d-flex align-items-center justify-content-between pb-3 px-4 fs-4">
+                <span>Monnaie rendue</span>
+                <span t-out="this.pos.formatCurrency(line.payment_method_id.payment_interface.amountDispensed)"/>
+            </div>
+        </xpath>
+    </t>
+</templates>

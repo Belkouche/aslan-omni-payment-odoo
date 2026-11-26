@@ -6,9 +6,13 @@ patch(GeneratePrinterData.prototype, {
         const payments = super.generatePaymentData(...arguments);
         // this.order.payment_ids is in the same order as the `payments` array above.
         this.order.payment_ids.forEach((line, i) => {
-            if (line.payment_method_id?.payment_provider === 'aslan_omni' && line.uiState?.aslanOmniResult) {
+            const provider = line.payment_method_id?.payment_provider;
+            if (provider === 'aslan_omni' && line.uiState?.aslanOmniResult) {
                 payments[i].aslan_omni_result = line.uiState.aslanOmniResult;
                 payments[i].aslan_omni_merchant_inline = Boolean(line.uiState.aslanOmniMerchantInline);
+            }
+            if (provider === 'aslan_cash' && line.uiState?.aslanCashResult) {
+                payments[i].aslan_cash_result = line.uiState.aslanCashResult;
             }
         });
         return payments;

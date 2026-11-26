@@ -7,6 +7,13 @@ the customer taps or inserts their card on the terminal; the result (approved /
 declined) flows back into Odoo, and the card slips (customer copy on the order
 receipt, merchant copy as a separate cut) print from it.
 
+Since 1.3.0, the same terminal can also host a **Cashmatic cash recycler**
+through a sibling payment method (`Aslan Omni (Cashmatic cash recycler)`): the
+cashier picks "Cash recycler" at checkout, the recycler collects the customer's
+notes and gives change back, and a cash slip prints on the order receipt. A
+blocking confirmation dialog protects customers from being short-changed when
+the recycler runs out of a denomination.
+
 **If you have never touched this code before, read this file top to bottom
 before changing anything.** It is written to teach, not just describe: every
 section explains *why* the code is shaped the way it is, especially around the
@@ -668,9 +675,10 @@ failures); only pairing and revoke are visible in the browser.
   specifically (see §10). Installing it as-is on 16/17/18/19 will fail at
   asset-bundle compile time or at module install time. A downport would need to
   reverse most of §10's choices for the target version.
-- **No automated tests.** The payment state machine (pay / recover / reverse) is
-  exactly the kind of logic that benefits from QUnit/Hoot tests; none ship
-  today. Until they do, test changes manually against a terminal or an emulator.
+- **Partial automated tests.** 1.3.0 adds a Python suite for the cash branch
+  (payload shaping, URL construction, capability gate). The card payment state
+  machine and the full JS payment loops still rely on manual testing against
+  a terminal or an emulator — QUnit/Hoot coverage is still TODO.
 
 ---
 
@@ -687,6 +695,33 @@ failures); only pairing and revoke are visible in the browser.
 | **COF / NapsPay** | The terminal's card-acquiring stack; this add-on only sees its results, never its internals. |
 | **`pos.payment.method`** | The Odoo model for one payment method (e.g. "Aslan Omni", "Cash"); this is where the Omni credentials live in Odoo 20, shared across any till that offers this method. |
 | **`uiState`** | A runtime-only (never persisted, never synced) scratch object on a `pos.payment` line, used for data — like our pending ref and terminal result — that must not become a database field. |
+| **Cashmatic recycler** | Physical cash-note recycler (SELFpay 460 at the moment) driven by the paired Aslan Omni terminal over LAN. Accepts customer notes, dispenses change, reports results through a cloud webhook. |
+
+---
+
+## 16. Changelog
+
+### 1.3.0 — Cashmatic cash recycler
+
+- New payment method `Aslan Omni (Cashmatic cash recycler)` driven by the same
+  paired terminal as the card method.
+- Optional cashier-driven tip picker (preset buttons + free-form input) shown
+  before starting a cash payment; passed through to the API as `tipsAmountCents`.
+- Blocking confirmation dialog on `partial` (recycler couldn't give full change)
+  and on cancelled/failed with inserted cash — the cashier acknowledges handing
+  the owed amount from the till before the line finalises. The acknowledgement
+  is logged as an internal note on the pos.order.
+- Capabilities gate on POS session open: `GET /cloud/devices/:deviceId/capabilities`.
+  Cash methods on terminals without a recycler (or on a VPS acquirer that can't
+  broker one) are hidden from the payment screen.
+- Cash slip on the customer receipt: requested amount, tip, inserted, dispensed,
+  owed (highlighted with cashier initials), Cashmatic transaction id.
+- First test suite for the module — covers the server-side payload shaping,
+  path construction, and capability gate.
+
+### 1.2.0 and earlier
+
+See git history; prior releases only shipped the card terminal integration.
 | **Asset bundle** | A named group of JS/CSS/QWeb files Odoo compiles together for one context (a POS session, the backend UI, …). A broken import anywhere in a bundle fails the whole bundle's compile. |
 
 ---

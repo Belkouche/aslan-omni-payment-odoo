@@ -1,13 +1,14 @@
 {
     'name': 'Aslan Omni Payment',
-    'version': '1.2.0',
+    'version': '1.3.0',
     'category': 'Sales/Point of Sale',
-    'summary': 'Aslan Omni card terminal integration for Odoo POS',
+    'summary': 'Aslan Omni card terminal + Cashmatic cash recycler integration for Odoo POS',
     'author': 'Aslan',
     'depends': ['point_of_sale'],
     'data': [
         'views/pos_payment_method_views.xml',
         'receipt/aslan_omni_card_slip.xml',
+        'receipt/aslan_omni_cash_slip.xml',
         'receipt/pos_order_receipt.xml',
     ],
     'assets': {
@@ -17,6 +18,7 @@
         ],
         'point_of_sale.payment_terminals': [
             'aslan_omni_payment/static/src/app/payment_aslan_omni.js',
+            'aslan_omni_payment/static/src/app/payment_aslan_cash.js',
             'aslan_omni_payment/static/src/overrides/models/pos_payment.js',
         ],
         'web.assets_backend': [

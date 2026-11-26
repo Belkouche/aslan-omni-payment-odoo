@@ -10,6 +10,12 @@ patch(PosPayment.prototype, {
             aslanOmniResult: null,
             aslanOmniMerchantPrinted: false,
             aslanOmniMerchantInline: false,
+            // Cash (Cashmatic recycler) slots. Same purpose as the card ones:
+            // runtime-only breadcrumbs for the payment interface + receipt.
+            aslanCashRef: null,
+            aslanCashCommandId: null,
+            aslanCashResult: null,
+            aslanCashTipsAmountCents: 0,
             ...(this.uiState ?? {}),
         };
     },
