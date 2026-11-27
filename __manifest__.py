@@ -1,6 +1,6 @@
 {
     'name': 'Aslan Omni Payment',
-    'version': '1.3.3',
+    'version': '1.3.4',
     'category': 'Sales/Point of Sale',
     'summary': 'Aslan Omni card terminal + Cashmatic cash recycler integration for Odoo POS',
     'author': 'Aslan',

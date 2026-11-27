@@ -9,6 +9,19 @@
                 <div class="text-center mb-2">
                     <t t-out="payment['aslan_omni_result'].get('txDate') or ''" /> <t t-out="payment['aslan_omni_result'].get('txTime') or ''" />
                 </div>
+                <!--
+                    Acquirer header (NAPS or VPS). Required by card-network rules on both the
+                    customer and merchant copies. The source is the per-transaction value
+                    on the result payload, which aslan-omni-api populates since the
+                    feat/pay-result-acquirer change on /cloud/pay result and /pay/:id/status.
+                    When the payload is missing the field (stored-order reprint from before
+                    the API change, or an unusual path that doesn't flow through napsResult),
+                    we default to 'naps' — the overwhelmingly common case and the historical
+                    acquirer that pre-dates VPS. The selection values are already lowercase
+                    ('naps', 'vps'); the slip shows them as 'NAPS', 'VPS'.
+                -->
+                <t t-set="_acq" t-value="(payment['aslan_omni_result'].get('acquirer') or 'naps').upper()" />
+                <div class="text-large text-center text-bold" t-out="_acq" />
                 <div class="text-large text-center text-bold mb-2">PAIEMENT PAR CARTE</div>
                 <table class="w-100 mb-2">
                     <tbody>

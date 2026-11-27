@@ -53,6 +53,22 @@ class PosPaymentMethod(models.Model):
         help='Base URL of the Aslan Omni API (cloud relay endpoint).',
     )
 
+    # Acquirer that will actually process card payments on this terminal.
+    # Card-network rules require the printed slip to identify the acquirer;
+    # the template reads result['aslan_omni_result']['acquirer'] first (which
+    # the cloud returns per-transaction since API change feat/pay-result-acquirer),
+    # and falls back to this field when the result payload is missing it (eg.
+    # a reprint from a stored order after a cold restart). Values: 'naps' or
+    # 'vps'; the template upper-cases them for the slip header.
+    aslan_omni_acquirer = fields.Selection(
+        selection=[('naps', 'NAPS'), ('vps', 'VPS')],
+        string='Acquirer',
+        default='naps',
+        help='Acquirer paired with this terminal — NAPS Pay (default, via the '
+             'Omni app on a Sunmi) or VPS (cloud-only, no terminal). Printed '
+             'on the card slip header.',
+    )
+
     aslan_omni_print_merchant_receipt = fields.Boolean(
         string='Print merchant card receipt',
         default=True,
@@ -258,8 +274,12 @@ class PosPaymentMethod(models.Model):
         params = super()._load_pos_data_fields(config)
         # aslan_omni_device_id is shared by both providers (same paired terminal).
         # Non-sensitive flags only: the API key stays server-side.
+        # aslan_omni_acquirer travels to the client so the card slip template
+        # has a fallback header value when the per-transaction result payload
+        # doesn't carry one (eg. a reprint from a stored order).
         params += [
             'aslan_omni_device_id',
+            'aslan_omni_acquirer',
             'aslan_omni_print_merchant_receipt',
         ]
         # Scope boundary: everything below is aslan_cash-only — the base
