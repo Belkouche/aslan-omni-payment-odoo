@@ -175,3 +175,108 @@ class TestAslanCashPaymentMethod(TransactionCase):
                 self.assertEqual(res['httpStatus'], 200,
                                  f'{provider}: should have made the request')
         self.assertEqual(len(captured), 2)
+
+
+class TestAslanCredentialInheritance(TransactionCase):
+    """When an operator adds a cash recycler payment method on a POS where the
+    card method is already paired, the device_id/api_key must flow through —
+    the help text promises "pair a terminal, not a specific payment method"."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.cash_journal = cls.env['account.journal'].search(
+            [('type', '=', 'cash')], limit=1) or cls.env['account.journal'].create({
+                'name': 'Cash inherit', 'type': 'cash', 'code': 'TCINH',
+            })
+        # Pick any POS config the base install exposes. We don't need a real
+        # fully-wired POS — just a config row to hang both methods off of so
+        # the `config_ids` link holds.
+        cls.config = cls.env['pos.config'].search([], limit=1)
+        if not cls.config:
+            cls.config = cls.env['pos.config'].create({'name': 'Test POS inherit'})
+
+    def _card(self, **over):
+        vals = {
+            'name': 'Card test',
+            'type': 'bank',
+            'journal_id': self.cash_journal.id,
+            'payment_provider': 'aslan_omni',
+            'aslan_omni_api_url': 'https://api.aslanpay.ma',
+            'config_ids': [(6, 0, [self.config.id])],
+        }
+        vals.update(over)
+        return self.env['pos.payment.method'].create(vals)
+
+    def _cash(self, **over):
+        vals = {
+            'name': 'Cash test',
+            'type': 'cash',
+            'journal_id': self.cash_journal.id,
+            'payment_provider': 'aslan_cash',
+            'config_ids': [(6, 0, [self.config.id])],
+        }
+        vals.update(over)
+        return self.env['pos.payment.method'].create(vals)
+
+    def test_default_get_pulls_credentials_from_paired_card_sibling(self):
+        self._card(aslan_omni_device_id='DEV-X', aslan_omni_api_key='key-X')
+        values = self.env['pos.payment.method'].with_context(
+            default_payment_provider='aslan_cash',
+            default_config_ids=[(6, 0, [self.config.id])],
+        ).default_get(['aslan_omni_device_id', 'aslan_omni_api_key', 'aslan_omni_api_url'])
+        self.assertEqual(values.get('aslan_omni_device_id'), 'DEV-X')
+        self.assertEqual(values.get('aslan_omni_api_key'), 'key-X')
+        self.assertEqual(values.get('aslan_omni_api_url'), 'https://api.aslanpay.ma')
+
+    def test_default_get_ignores_unpaired_card_sibling(self):
+        # A card method with no device_id must not be picked up as a source.
+        self._card()
+        values = self.env['pos.payment.method'].with_context(
+            default_payment_provider='aslan_cash',
+            default_config_ids=[(6, 0, [self.config.id])],
+        ).default_get(['aslan_omni_device_id', 'aslan_omni_api_key'])
+        self.assertFalse(values.get('aslan_omni_device_id'))
+        self.assertFalse(values.get('aslan_omni_api_key'))
+
+    def test_default_get_skips_non_cash_drafts(self):
+        self._card(aslan_omni_device_id='DEV-Y', aslan_omni_api_key='key-Y')
+        # A draft with no provider or a different provider must not inherit.
+        values = self.env['pos.payment.method'].default_get(
+            ['aslan_omni_device_id', 'aslan_omni_api_key'])
+        self.assertFalse(values.get('aslan_omni_device_id'))
+
+    def test_write_on_card_propagates_to_blank_cash_sibling(self):
+        card = self._card()
+        cash = self._cash()
+        self.assertFalse(cash.aslan_omni_device_id)
+        card.write({'aslan_omni_device_id': 'DEV-W', 'aslan_omni_api_key': 'key-W'})
+        cash.invalidate_recordset()
+        self.assertEqual(cash.aslan_omni_device_id, 'DEV-W')
+        self.assertEqual(cash.sudo().aslan_omni_api_key, 'key-W')
+
+    def test_write_on_card_does_not_clobber_explicit_cash_device(self):
+        card = self._card()
+        cash = self._cash(
+            aslan_omni_device_id='DEV-CASH-EXPLICIT',
+            aslan_omni_api_key='key-cash-explicit',
+        )
+        card.write({'aslan_omni_device_id': 'DEV-W', 'aslan_omni_api_key': 'key-W'})
+        cash.invalidate_recordset()
+        self.assertEqual(cash.aslan_omni_device_id, 'DEV-CASH-EXPLICIT')
+        self.assertEqual(cash.sudo().aslan_omni_api_key, 'key-cash-explicit')
+
+    def test_write_on_cash_does_not_back_propagate_to_card(self):
+        card = self._card(aslan_omni_device_id='DEV-CARD', aslan_omni_api_key='key-card')
+        cash = self._cash()
+        cash.write({'aslan_omni_device_id': 'DEV-CASH-NEW'})
+        card.invalidate_recordset()
+        # Card method keeps its own device id — cash writes never flow upward.
+        self.assertEqual(card.aslan_omni_device_id, 'DEV-CARD')
+
+    def test_write_skips_card_methods_with_no_config(self):
+        """A card method not attached to any POS has no siblings to update —
+        must not crash and must not try to query for siblings."""
+        card = self._card(config_ids=[(5, 0)])
+        card.write({'aslan_omni_device_id': 'DEV-ORPHAN'})
+        self.assertEqual(card.aslan_omni_device_id, 'DEV-ORPHAN')

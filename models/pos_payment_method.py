@@ -63,7 +63,9 @@ class PosPaymentMethod(models.Model):
     # The device_id/api_key/api_url fields above are reused: a cash payment method
     # points at the same paired Omni terminal (the Sunmi broker that drives the
     # physical Cashmatic over LAN). Pair once via the card method; the cash method
-    # can then reuse those credentials (and its own "Pair" button runs the same flow).
+    # inherits those credentials automatically — see default_get and the write
+    # override below, which are what make the help text's "pair once per terminal,
+    # not per method" promise true.
     aslan_cash_tips_enabled = fields.Boolean(
         string='Enable tip picker on cash payments',
         default=False,
@@ -79,6 +81,108 @@ class PosPaymentMethod(models.Model):
                 raise ValidationError(
                     'Aslan Omni API URL must use HTTPS to protect credentials in transit.'
                 )
+
+    @api.model
+    def default_get(self, fields_list):
+        """Pre-fill a new aslan_cash method with credentials from its sibling
+        aslan_omni card method, if one is already paired.
+
+        The help text on the pairing widget promises "pair a terminal, not a
+        specific payment method" — so when an operator adds a Cashmatic method
+        after they've already paired the card method on the same POS, the form
+        should open with device_id/api_key pre-filled, ready to save. Without
+        this, the operator sees blank fields and (if they follow the on-screen
+        instructions) tries to pair a second time, which creates a separate
+        device claim that may never be consumed (orphan row in device claims).
+        """
+        values = super().default_get(fields_list)
+        # Only act on a cash-recycler draft, and only if we're being asked for
+        # the credential fields at all.
+        wants_creds = any(
+            f in fields_list
+            for f in ('aslan_omni_device_id', 'aslan_omni_api_key', 'aslan_omni_api_url')
+        )
+        if not wants_creds:
+            return values
+        is_cash_draft = values.get('payment_provider') == 'aslan_cash' or (
+            self.env.context.get('default_payment_provider') == 'aslan_cash'
+        )
+        if not is_cash_draft:
+            return values
+        # The form hasn't picked POS configs yet when opened from the "New"
+        # button under a specific POS; context provides it via default_config_ids
+        # (one-sided default from the related config view) OR active_id on the
+        # pos.config form. Fall back to all siblings the user can see.
+        config_ids = (
+            self.env.context.get('default_config_ids')
+            or self.env.context.get('active_ids')
+            or []
+        )
+        domain = [('payment_provider', '=', 'aslan_omni'),
+                  ('aslan_omni_device_id', '!=', False)]
+        if config_ids:
+            # Match any sibling card method that shares at least one POS config.
+            domain.append(('config_ids', 'in', config_ids))
+        sibling = self.env['pos.payment.method'].sudo().search(domain, limit=1)
+        if not sibling:
+            return values
+        # sudo() so we can read aslan_omni_api_key (restricted to POS managers)
+        # even when a non-manager has the group that creates payment methods;
+        # the pairing widget itself runs under the same group boundary.
+        if 'aslan_omni_device_id' in fields_list and not values.get('aslan_omni_device_id'):
+            values['aslan_omni_device_id'] = sibling.aslan_omni_device_id
+        if 'aslan_omni_api_key' in fields_list and not values.get('aslan_omni_api_key'):
+            values['aslan_omni_api_key'] = sibling.aslan_omni_api_key
+        if 'aslan_omni_api_url' in fields_list and not values.get('aslan_omni_api_url'):
+            values['aslan_omni_api_url'] = sibling.aslan_omni_api_url
+        return values
+
+    def write(self, vals):
+        """Propagate a newly-set device_id/api_key from an aslan_omni card
+        method to its sibling aslan_cash recycler methods on the same POS(es).
+
+        Covers the "card method already exists but blank → operator pairs it →
+        the already-created cash method on the same POS stays blank" ordering.
+        Without this the operator would pair the card method, then have to
+        re-open every sibling cash method and wonder why its fields are still
+        empty. Only overwrites blank siblings — never clobbers a cash method
+        that was intentionally pointed at a different terminal.
+        """
+        result = super().write(vals)
+        propagating = {k: vals[k] for k in ('aslan_omni_device_id', 'aslan_omni_api_key',
+                                            'aslan_omni_api_url') if k in vals}
+        if not propagating:
+            return result
+        # Only mirror writes coming from a card method — a write on a cash
+        # method must not back-propagate to the card method (we treat the card
+        # method as the source of truth).
+        for record in self.filtered(lambda r: r.payment_provider == 'aslan_omni'):
+            if not record.config_ids:
+                continue
+            siblings = self.sudo().search([
+                ('payment_provider', '=', 'aslan_cash'),
+                ('config_ids', 'in', record.config_ids.ids),
+                ('id', '!=', record.id),
+            ])
+            for s in siblings:
+                mirror = {}
+                if 'aslan_omni_device_id' in propagating and not s.aslan_omni_device_id:
+                    mirror['aslan_omni_device_id'] = propagating['aslan_omni_device_id']
+                if 'aslan_omni_api_key' in propagating and not s.aslan_omni_api_key:
+                    mirror['aslan_omni_api_key'] = propagating['aslan_omni_api_key']
+                if 'aslan_omni_api_url' in propagating and (
+                    not s.aslan_omni_api_url
+                    or s.aslan_omni_api_url == 'https://api.aslanpay.ma'
+                ):
+                    # API URL has a non-blank default, so also mirror when the
+                    # sibling is still on the default — otherwise a staging URL
+                    # set on the card method would never reach the cash one.
+                    mirror['aslan_omni_api_url'] = propagating['aslan_omni_api_url']
+                if mirror:
+                    # super().write to avoid recursing through this override on
+                    # the aslan_cash side (it's a no-op there, but save the trip).
+                    super(PosPaymentMethod, s).write(mirror)
+        return result
 
     @api.model
     def _load_pos_data_fields(self, config):
