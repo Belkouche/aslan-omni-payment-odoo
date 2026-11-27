@@ -1,6 +1,12 @@
 /** @odoo-module **/
 
-import { PosStore } from '@point_of_sale/app/store/pos_store';
+// PosStore moved from @point_of_sale/app/store/pos_store (Odoo 17/18) to
+// @point_of_sale/app/services/pos_store (Odoo 20+). This addon targets
+// Odoo 20 per __manifest__, so the services/ path is the correct one.
+// Verified against Odoo 20.0 source at
+// addons/point_of_sale/static/src/app/services/pos_store.js (the store/
+// subfolder returns 404 on GitHub for the 20.0 branch).
+import { PosStore } from '@point_of_sale/app/services/pos_store';
 import { patch } from '@web/core/utils/patch';
 
 // Per-probe timeout. Short enough that N recyclers x PROBE_TIMEOUT_MS
