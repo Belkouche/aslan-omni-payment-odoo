@@ -63,7 +63,9 @@ class PosPaymentMethod(models.Model):
     # The device_id/api_key/api_url fields above are reused: a cash payment method
     # points at the same paired Omni terminal (the Sunmi broker that drives the
     # physical Cashmatic over LAN). Pair once via the card method; the cash method
-    # can then reuse those credentials (and its own "Pair" button runs the same flow).
+    # inherits those credentials automatically — see default_get and the write
+    # override below, which are what make the help text's "pair once per terminal,
+    # not per method" promise true.
     aslan_cash_tips_enabled = fields.Boolean(
         string='Enable tip picker on cash payments',
         default=False,
@@ -79,6 +81,177 @@ class PosPaymentMethod(models.Model):
                 raise ValidationError(
                     'Aslan Omni API URL must use HTTPS to protect credentials in transit.'
                 )
+
+    # ── Sibling-credential inheritance ────────────────────────────────────────
+    #
+    # The pairing widget promises "pair a terminal, not a specific payment
+    # method". These three hooks (default_get, create, write) carry out that
+    # promise by copying device_id/api_key from the card method to its sibling
+    # cash-recycler method on the same POS.
+    #
+    # Security boundaries that are DELIBERATELY enforced across these hooks:
+    #
+    # - aslan_omni_api_key MUST NOT leak into default_get's return value.
+    #   default_get flows back to the client form, and the api_key field has
+    #   groups='point_of_sale.group_pos_manager,base.group_system'. Returning
+    #   it via sudo() in defaults would hand the secret to non-managers who
+    #   can still create payment methods. The api_key copy therefore happens
+    #   server-side in create() and write(), never in default_get().
+    #
+    # - sibling lookups DO NOT use sudo(). They run with the user's own ACLs
+    #   (so cross-company rows stay invisible) and are additionally scoped to
+    #   self.env.companies, which prevents a user with multi-company switch
+    #   bleeding data between companies. config_ids from context is never
+    #   trusted blindly — the search filters on configs the user can read,
+    #   and an empty resolved set means we return no sibling at all (no
+    #   "fall back to global search" footgun).
+
+    @api.model
+    def default_get(self, fields_list):
+        values = super().default_get(fields_list)
+        # Only act when the draft is a cash recycler AND the form is asking
+        # for one of the non-secret credential fields. The api_key is never
+        # pre-filled here; it is copied server-side in create().
+        wants_non_secret = any(
+            f in fields_list
+            for f in ('aslan_omni_device_id', 'aslan_omni_api_url')
+        )
+        if not wants_non_secret:
+            return values
+        is_cash_draft = values.get('payment_provider') == 'aslan_cash' or (
+            self.env.context.get('default_payment_provider') == 'aslan_cash'
+        )
+        if not is_cash_draft:
+            return values
+        sibling = self._aslan_omni_find_card_sibling_for_default()
+        if not sibling:
+            return values
+        if 'aslan_omni_device_id' in fields_list and not values.get('aslan_omni_device_id'):
+            values['aslan_omni_device_id'] = sibling.aslan_omni_device_id
+        if 'aslan_omni_api_url' in fields_list and not values.get('aslan_omni_api_url'):
+            values['aslan_omni_api_url'] = sibling.aslan_omni_api_url
+        return values
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        records = super().create(vals_list)
+        # For each freshly created aslan_cash row that still has a blank
+        # api_key, mirror from the first card sibling on a shared POS. This
+        # is where the secret copy actually happens — write() below applies
+        # the same group check (field-level ACL) so a non-manager caller gets
+        # an AccessError instead of a silent secret leak.
+        for record in records.filtered(lambda r: r.payment_provider == 'aslan_cash'):
+            sibling = record._aslan_omni_find_card_sibling_for_record()
+            if not sibling:
+                continue
+            copy = {}
+            # Re-check each field so an explicit value passed in create() wins
+            # over the sibling. The device_id copy may already have happened
+            # via default_get in the form flow — but programmatic creates
+            # (data migration, another module) don't see default_get, so we
+            # re-apply here.
+            if not record.aslan_omni_device_id and sibling.aslan_omni_device_id:
+                copy['aslan_omni_device_id'] = sibling.aslan_omni_device_id
+            if not record.aslan_omni_api_key and sibling.aslan_omni_api_key:
+                copy['aslan_omni_api_key'] = sibling.aslan_omni_api_key
+            if (
+                (not record.aslan_omni_api_url
+                 or record.aslan_omni_api_url == 'https://api.aslanpay.ma')
+                and sibling.aslan_omni_api_url
+            ):
+                copy['aslan_omni_api_url'] = sibling.aslan_omni_api_url
+            if copy:
+                record.write(copy)
+        return records
+
+    def write(self, vals):
+        result = super().write(vals)
+        propagating = {k: vals[k] for k in ('aslan_omni_device_id', 'aslan_omni_api_key',
+                                            'aslan_omni_api_url') if k in vals}
+        if not propagating:
+            return result
+        # Mirror card→cash only. A write on a cash method never flows back to
+        # the card method (card is the source of truth).
+        for record in self.filtered(lambda r: r.payment_provider == 'aslan_omni'):
+            if not record.config_ids:
+                continue
+            # Sibling search runs under the current user's ACLs plus explicit
+            # company scoping — see the security notes above the hooks.
+            siblings = self.search([
+                ('payment_provider', '=', 'aslan_cash'),
+                ('config_ids', 'in', record.config_ids.ids),
+                ('id', '!=', record.id),
+                ('company_id', 'in', self.env.companies.ids),
+            ])
+            for s in siblings:
+                mirror = {}
+                if 'aslan_omni_device_id' in propagating and not s.aslan_omni_device_id:
+                    mirror['aslan_omni_device_id'] = propagating['aslan_omni_device_id']
+                if 'aslan_omni_api_key' in propagating and not s.aslan_omni_api_key:
+                    mirror['aslan_omni_api_key'] = propagating['aslan_omni_api_key']
+                if 'aslan_omni_api_url' in propagating and (
+                    not s.aslan_omni_api_url
+                    or s.aslan_omni_api_url == 'https://api.aslanpay.ma'
+                ):
+                    mirror['aslan_omni_api_url'] = propagating['aslan_omni_api_url']
+                if mirror:
+                    # super().write to avoid recursing through this override on
+                    # the aslan_cash side (it's a no-op there, but save the trip).
+                    # Field-level ACLs still fire — a non-manager writing api_key
+                    # on the card method would raise AccessError at the parent
+                    # write and never reach this mirror loop.
+                    super(PosPaymentMethod, s).write(mirror)
+        return result
+
+    def _aslan_omni_find_card_sibling_for_record(self):
+        """Pick a card method on at least one of this record's POS configs.
+        User ACLs apply (no sudo); result is implicitly company-scoped via
+        record rules and additionally by self.env.companies below."""
+        self.ensure_one()
+        if not self.config_ids:
+            return self.browse()
+        return self.search([
+            ('payment_provider', '=', 'aslan_omni'),
+            ('aslan_omni_device_id', '!=', False),
+            ('config_ids', 'in', self.config_ids.ids),
+            ('company_id', 'in', self.env.companies.ids),
+            ('id', '!=', self.id),
+        ], limit=1)
+
+    @api.model
+    def _aslan_omni_find_card_sibling_for_default(self):
+        """default_get variant: config_ids come from context and MAY be a lie.
+        Resolve them through pos.config.browse+check_access_rights so the
+        unreadable ones drop out before we match against them."""
+        raw = (
+            self.env.context.get('default_config_ids')
+            or self.env.context.get('active_ids')
+            or []
+        )
+        # default_config_ids may arrive as [(6, 0, [...])] or [...]; normalise.
+        config_ids = []
+        for entry in raw:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 3 and entry[0] == 6:
+                config_ids.extend(entry[2])
+            elif isinstance(entry, int):
+                config_ids.append(entry)
+        if not config_ids:
+            # No config context at all → do nothing. We intentionally refuse to
+            # fall back to a global search: it would surface a card method on a
+            # POS the user is not actually configuring right now.
+            return self.browse()
+        readable = self.env['pos.config'].browse(config_ids).filtered(
+            lambda c: c.check_access_rights('read', raise_exception=False)
+            and c.check_access_rule('read') is None
+        )
+        if not readable:
+            return self.browse()
+        return self.search([
+            ('payment_provider', '=', 'aslan_omni'),
+            ('aslan_omni_device_id', '!=', False),
+            ('config_ids', 'in', readable.ids),
+            ('company_id', 'in', self.env.companies.ids),
+        ], limit=1)
 
     @api.model
     def _load_pos_data_fields(self, config):
